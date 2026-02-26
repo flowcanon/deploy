@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+echo "Building flow-deploy binary..."
+
+docker build \
+    -f "$PROJECT_DIR/Dockerfile.build" \
+    -t flow-deploy-builder \
+    "$PROJECT_DIR"
+
+# Extract binary from the builder image
+CONTAINER_ID=$(docker create flow-deploy-builder)
+mkdir -p "$PROJECT_DIR/dist"
+docker cp "$CONTAINER_ID:/flow-deploy" "$PROJECT_DIR/dist/flow-deploy"
+docker rm "$CONTAINER_ID" > /dev/null
+
+chmod +x "$PROJECT_DIR/dist/flow-deploy"
+echo "Binary built: dist/flow-deploy"
+echo "Size: $(du -h "$PROJECT_DIR/dist/flow-deploy" | cut -f1)"
