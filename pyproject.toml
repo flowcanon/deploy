@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "flow-deploy"
-version = "0.1.1"
+version = "0.1.2"
 description = "Rolling deploys for Docker Compose + Traefik stacks"
 authors = ["Flowcanon"]
 readme = "SPEC.md"
