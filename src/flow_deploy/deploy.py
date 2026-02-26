@@ -104,7 +104,8 @@ def _deploy_service(svc: config.ServiceConfig, tag: str, compose_cmd: list[str])
     env = {"DEPLOY_TAG": tag}
 
     # 1. Pull
-    log.step(f"pulling {svc.image or svc.name}:{tag}...")
+    image_name = (svc.image or svc.name).rsplit(":", 1)[0]
+    log.step(f"pulling {image_name}:{tag}...")
     pull_start = time.time()
     result = compose.compose_run(["pull", svc.name], env=env, cmd=compose_cmd)
     if result.returncode != 0:
@@ -203,7 +204,8 @@ def _dry_run(tag: str, services: list[config.ServiceConfig]) -> None:
     log.info("")
     for svc in services:
         log.service_start(svc.name)
-        log.step(f"would pull {svc.image or svc.name}:{tag}")
+        image_name = (svc.image or svc.name).rsplit(":", 1)[0]
+        log.step(f"would pull {image_name}:{tag}")
         log.step(f"would scale to 2, health check (timeout: {svc.healthcheck_timeout}s)")
         log.step(f"would drain old container ({svc.drain}s timeout)")
         log.step("would scale back to 1")

@@ -1,6 +1,6 @@
 services:
   docs:
-    image: flowcanon/flow-deploy-docs:${DOCKER_IMAGE_TAG:-latest}
+    image: flowcanon/flow-deploy-docs:${DEPLOY_TAG:-latest}
     build: .
     env_file: ./.env
     networks:
@@ -11,6 +11,7 @@ services:
       timeout: 5s
       retries: 5
     labels:
+      - deploy.role=app
       - traefik.docker.network=traefik
       - traefik.enable=true
       - traefik.http.routers.flow-deploy-docs.entrypoints=web,websecure
