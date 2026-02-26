@@ -1,0 +1,146 @@
+name: Release builder
+
+on:
+  push:
+    branches:
+      - master
+
+  workflow_dispatch:
+    inputs:
+      force_deploy:
+        description: Force deploy
+        type: boolean
+      force_pr:
+        description: Force pull request
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/flowcanon/flow-deploy-docs
+
+jobs:
+  detect_release:
+    name: Detect release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: tag
+        uses: salsify/action-detect-and-tag-new-version@v2
+        with:
+          tag-annotation-template: |
+            chore(release): {VERSION}
+
+    outputs:
+      created_tag: ${{ steps.tag.outputs.tag }}
+      current-version: ${{ steps.tag.outputs.current-version }}
+      previous-version: ${{ steps.tag.outputs.previous-version }}
+
+  build_and_deploy:
+    if: inputs.force_deploy || needs.detect_release.outputs.created_tag
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    needs: detect_release
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+
+      - uses: ./.github/actions/deploy
+        with:
+          tag: ${{ steps.meta.outputs.version }}
+          ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+  build_release:
+    if: needs.detect_release.outputs.created_tag
+    name: Build release
+    runs-on: ubuntu-latest
+    needs: detect_release
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build binaries
+        run: |
+          docker build --target builder-musl -t flow-deploy-musl -f Dockerfile.build .
+          docker build --target builder-glibc -t flow-deploy-glibc -f Dockerfile.build .
+          mkdir -p dist
+          docker cp $(docker create flow-deploy-musl):/build/dist/flow-deploy-linux-musl dist/
+          docker cp $(docker create flow-deploy-glibc):/build/dist/flow-deploy-linux-glibc dist/
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.detect_release.outputs.current-version }}
+          generate_release_notes: true
+          files: |
+            dist/flow-deploy-linux-musl
+            dist/flow-deploy-linux-glibc
+
+  build_changelog:
+    name: Build changelog
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: changelog
+        uses: flowcanon/release-builder/build-changelog@v2
+
+    outputs:
+      has-prs: ${{ steps.changelog.outputs.has-prs }}
+      previous-version: ${{ steps.changelog.outputs.previous-version }}
+      next-version: ${{ steps.changelog.outputs.next-version }}
+      notes: ${{ steps.changelog.outputs.notes }}
+      release: ${{ steps.changelog.outputs.release }}
+
+  create_pr:
+    if: always() && inputs.force_pr || needs.build_changelog.outputs.has-prs
+    name: Create pull request
+    runs-on: ubuntu-latest
+    needs: build_changelog
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: flowcanon/release-builder/package-version@v2
+        with:
+          version: ${{ needs.build_changelog.outputs.next-version }}
+
+      - uses: flowcanon/release-builder/pull-request@v2
+        with:
+          next-version: ${{ needs.build_changelog.outputs.next-version }}
+          notes: ${{ needs.build_changelog.outputs.notes }}
+          previous-version: ${{ needs.build_changelog.outputs.previous-version }}
+          release: ${{ needs.build_changelog.outputs.release }}
