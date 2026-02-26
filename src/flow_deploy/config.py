@@ -30,7 +30,7 @@ def _get_label(labels: dict, key: str, default=None):
 
 def _parse_x_deploy(compose_dict: dict) -> dict:
     """Extract x-deploy top-level defaults."""
-    return compose_dict.get("x-deploy", {})
+    return (compose_dict or {}).get("x-deploy", {})
 
 
 def parse_services(compose_dict: dict) -> list[ServiceConfig]:

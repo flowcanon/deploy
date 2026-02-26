@@ -36,6 +36,7 @@ runs:
         HOST_NAME: ${{ inputs.host }}
         HOST_USER: ${{ inputs.user }}
       run: |
+        touch .env
         hosts=$(${{ inputs.command }} config | PYTHONPATH=src python3 .github/actions/deploy/discover_hosts.py)
         echo "hosts=$hosts" >> "$GITHUB_OUTPUT"
 

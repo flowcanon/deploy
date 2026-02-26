@@ -10,6 +10,9 @@ on:
       force_deploy:
         description: Force deploy
         type: boolean
+      force_release:
+        description: Force release
+        type: boolean
       force_pr:
         description: Force pull request
         type: boolean
@@ -85,7 +88,7 @@ jobs:
           ssh-port: ${{ vars.SSH_PORT }}
 
   build_release:
-    if: needs.detect_release.outputs.created_tag
+    if: inputs.force_release || needs.detect_release.outputs.created_tag
     name: Build release
     runs-on: ubuntu-latest
     needs: detect_release
