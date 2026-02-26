@@ -1,4 +1,5 @@
-FROM python:3.11-alpine AS builder
+# --- musl (Alpine) ---
+FROM python:3.11-alpine AS builder-musl
 
 RUN apk add --no-cache \
     binutils \
@@ -17,11 +18,36 @@ RUN poetry config virtualenvs.create false \
 
 RUN pyinstaller \
     --onefile \
-    --name flow-deploy \
+    --name flow-deploy-linux-musl \
     --strip \
     --noupx \
     src/flow_deploy/cli.py
 
+# --- glibc (Ubuntu/Debian) ---
+FROM python:3.11-slim AS builder-glibc
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    binutils \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir pyinstaller poetry
+
+WORKDIR /build
+COPY pyproject.toml poetry.lock ./
+COPY src/ src/
+
+RUN poetry config virtualenvs.create false \
+    && poetry install --only main --no-interaction
+
+RUN pyinstaller \
+    --onefile \
+    --name flow-deploy-linux-glibc \
+    --strip \
+    --noupx \
+    src/flow_deploy/cli.py
+
+# --- collect both binaries ---
 FROM alpine:3.19
-COPY --from=builder /build/dist/flow-deploy /flow-deploy
-ENTRYPOINT ["/flow-deploy"]
+COPY --from=builder-musl /build/dist/flow-deploy-linux-musl /dist/
+COPY --from=builder-glibc /build/dist/flow-deploy-linux-glibc /dist/

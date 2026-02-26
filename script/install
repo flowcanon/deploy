@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+REPO="flowcannon/flow-deploy"
+INSTALL_DIR="/usr/local/bin"
+BINARY_NAME="flow-deploy"
+
+# Detect libc
+detect_libc() {
+    if ldd /bin/ls 2>&1 | grep -qi musl; then
+        echo "musl"
+    else
+        echo "glibc"
+    fi
+}
+
+LIBC=$(detect_libc)
+URL="https://github.com/${REPO}/releases/latest/download/flow-deploy-linux-${LIBC}"
+
+echo "Detected libc: ${LIBC}"
+echo "Downloading flow-deploy from ${URL}..."
+
+if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "${INSTALL_DIR}/${BINARY_NAME}" "${URL}"
+elif command -v wget >/dev/null 2>&1; then
+    wget -qO "${INSTALL_DIR}/${BINARY_NAME}" "${URL}"
+else
+    echo "Error: curl or wget required" >&2
+    exit 1
+fi
+
+chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+echo "Installed: $(${BINARY_NAME} --version)"
