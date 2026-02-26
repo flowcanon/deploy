@@ -130,3 +130,87 @@ def test_validate_healthchecks_all_good():
 def test_empty_services():
     assert parse_services({"services": {}}) == []
     assert parse_services({}) == []
+
+
+# --- x-deploy discovery ---
+
+
+def test_x_deploy_defaults():
+    d = {
+        "x-deploy": {"host": "app-1.example.com", "user": "deploy", "dir": "/srv/myapp"},
+        "services": {
+            "web": {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        },
+    }
+    svc = parse_services(d)[0]
+    assert svc.host == "app-1.example.com"
+    assert svc.user == "deploy"
+    assert svc.dir == "/srv/myapp"
+
+
+def test_per_service_labels_override_x_deploy():
+    d = {
+        "x-deploy": {"host": "app-1.example.com", "user": "deploy", "dir": "/srv/myapp"},
+        "services": {
+            "web": {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+            "worker": {
+                "image": "app:latest",
+                "labels": {
+                    "deploy.role": "app",
+                    "deploy.host": "worker-1.example.com",
+                    "deploy.dir": "/srv/worker",
+                },
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        },
+    }
+    svcs = parse_services(d)
+    web = next(s for s in svcs if s.name == "web")
+    worker = next(s for s in svcs if s.name == "worker")
+
+    assert web.host == "app-1.example.com"
+    assert web.user == "deploy"
+    assert web.dir == "/srv/myapp"
+
+    assert worker.host == "worker-1.example.com"
+    assert worker.user == "deploy"
+    assert worker.dir == "/srv/worker"
+
+
+def test_no_x_deploy_no_labels():
+    d = _compose_dict(
+        ("web", {
+            "image": "app:latest",
+            "labels": {"deploy.role": "app"},
+            "healthcheck": {"test": ["CMD", "true"]},
+        }),
+    )
+    svc = parse_services(d)[0]
+    assert svc.host is None
+    assert svc.user is None
+    assert svc.dir is None
+
+
+def test_x_deploy_with_list_labels():
+    d = {
+        "x-deploy": {"host": "default.example.com", "user": "deploy", "dir": "/srv/app"},
+        "services": {
+            "web": {
+                "image": "app:latest",
+                "labels": ["deploy.role=app", "deploy.host=override.example.com"],
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        },
+    }
+    svc = parse_services(d)[0]
+    assert svc.host == "override.example.com"
+    assert svc.user == "deploy"
+    assert svc.dir == "/srv/app"
