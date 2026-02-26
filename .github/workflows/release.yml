@@ -47,6 +47,7 @@ jobs:
     name: Build & Deploy
     runs-on: ubuntu-latest
     needs: detect_release
+    environment: coruscant 
     permissions:
       contents: read
       packages: write
@@ -77,6 +78,9 @@ jobs:
         with:
           tag: ${{ steps.meta.outputs.version }}
           ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+          host: ${{ vars.HOST_NAME }}
+          user: ${{ vars.HOST_USER }}
+          ssh-port: ${{ vars.SSH_PORT }}
 
   build_release:
     if: needs.detect_release.outputs.created_tag

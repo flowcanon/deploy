@@ -11,6 +11,15 @@ inputs:
   command:
     description: Compose command (script/prod or script/dev)
     default: script/prod
+  host:
+    description: Override deploy host (e.g. from vars.HOST_NAME)
+    default: ""
+  user:
+    description: Override deploy user (e.g. from vars.HOST_USER)
+    default: ""
+  ssh-port:
+    description: Override SSH port (e.g. from vars.SSH_PORT)
+    default: ""
 
 runs:
   using: composite
@@ -23,6 +32,9 @@ runs:
     - name: Discover hosts
       id: discover
       shell: bash
+      env:
+        HOST_NAME: ${{ inputs.host }}
+        HOST_USER: ${{ inputs.user }}
       run: |
         hosts=$(${{ inputs.command }} config | PYTHONPATH=src python3 .github/actions/deploy/discover_hosts.py)
         echo "hosts=$hosts" >> "$GITHUB_OUTPUT"
@@ -32,14 +44,20 @@ runs:
       env:
         DEPLOY_TAG: ${{ inputs.tag }}
         HOSTS_JSON: ${{ steps.discover.outputs.hosts }}
+        SSH_PORT: ${{ inputs.ssh-port }}
       run: |
+        port_args=()
+        if [ -n "$SSH_PORT" ]; then
+          port_args=(-p "$SSH_PORT")
+        fi
+
         echo "$HOSTS_JSON" | jq -c '.[]' | while read -r group; do
           host=$(echo "$group" | jq -r '.host')
           user=$(echo "$group" | jq -r '.user')
           dir=$(echo "$group" | jq -r '.dir')
 
           echo "::group::Deploy to $user@$host:$dir"
-          ssh -o StrictHostKeyChecking=no "$user@$host" \
+          ssh -o StrictHostKeyChecking=no "${port_args[@]}" "$user@$host" \
             "cd $dir && DEPLOY_TAG=$DEPLOY_TAG flow-deploy deploy"
           echo "::endgroup::"
         done
