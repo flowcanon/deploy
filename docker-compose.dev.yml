@@ -1,0 +1,17 @@
+x-deploy:
+  host: deploy.thelio.local
+
+services:
+  docs:
+    image: localhost:5000/flow-deploy-docs:${DEPLOY_TAG:-latest}
+
+  registry:
+    image: registry:2
+    ports:
+      - "5000:5000"
+    networks:
+      - traefik
+
+networks:
+  traefik:
+    external: true

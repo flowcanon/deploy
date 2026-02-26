@@ -1,6 +1,11 @@
+x-deploy:
+  host: deploy.flowcanon.com
+  user: deploy
+  dir: /srv/flow-deploy-docs
+
 services:
   docs:
-    image: flowcanon/flow-deploy-docs:${DEPLOY_TAG:-latest}
+    image: ghcr.io/flowcanon/flow-deploy-docs:${DEPLOY_TAG:-latest}
     build: .
     env_file: ./.env
     networks:

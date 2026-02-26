@@ -1,4 +1,4 @@
 #!/bin/bash
 set -eou pipefail
 cd "$(dirname "$0")/.."
-docker compose "$@"
+docker compose -f docker-compose.yml -f docker-compose.dev.yml "$@"
