@@ -71,9 +71,7 @@
     <nav class="fixed top-0 w-full z-50 bg-slate-950/80 backdrop-blur-md border-b border-slate-800/50">
         <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
             <a href="/" class="flex items-center gap-2 text-white font-semibold text-lg">
-                <svg class="w-6 h-6 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                </svg>
+                <img src="icon.png" alt="Flow Deploy" class="h-6 w-6">
                 Flow Deploy
             </a>
             <div class="flex items-center gap-6">
@@ -180,6 +178,20 @@
 
         loadDocs();
     </script>
+
+    <!-- Footer -->
+    <footer class="py-12 px-6 border-t border-slate-800/50">
+        <div class="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+            <a href="https://flowcanon.com" class="flex items-center gap-2 hover:opacity-80 transition-opacity">
+                <img src="wordmark.png" alt="Flow Canon" class="h-8 sm:h-10">
+            </a>
+            <div class="flex items-center gap-6 text-sm text-slate-500">
+                <a href="/" class="hover:text-slate-300 transition-colors">Home</a>
+                <a href="docs.html" class="hover:text-slate-300 transition-colors">Docs</a>
+                <a href="https://github.com/flowcannon/flow-deploy" class="hover:text-slate-300 transition-colors">GitHub</a>
+            </div>
+        </div>
+    </footer>
 
 </body>
 </html>
