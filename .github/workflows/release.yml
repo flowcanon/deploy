@@ -31,9 +31,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - run: command -v poetry || pipx install poetry
       - id: tag
         uses: salsify/action-detect-and-tag-new-version@v2
         with:
+          version-command: poetry version --short
           tag-annotation-template: |
             chore(release): {VERSION}
 
