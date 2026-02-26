@@ -4,15 +4,15 @@ import sys
 
 import click
 
-from flow_deploy import __version__, compose, deploy as deploy_mod, process, tags
-from flow_deploy import log
+from flow_deploy import __version__, compose
+from flow_deploy import deploy as deploy_mod
+from flow_deploy import log, process, tags
 
 
 @click.group()
 @click.version_option(version=__version__, prog_name="flow-deploy")
 def main():
     """Rolling deploys for Docker Compose + Traefik stacks."""
-    pass
 
 
 @main.command()

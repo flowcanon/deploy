@@ -1,7 +1,5 @@
 """Tests for compose.py — command resolution + execution."""
 
-import os
-
 from flow_deploy import process
 from flow_deploy.compose import compose_config, compose_run, resolve_command
 
@@ -53,6 +51,6 @@ def test_compose_config_raises_on_failure(mock_process):
     mock_process.responses.append(process.Result(1, "", "error"))
     try:
         compose_config(cmd=["docker", "compose"])
-        assert False, "Should have raised"
+        raise AssertionError("Should have raised")
     except RuntimeError as e:
         assert "compose config failed" in str(e)

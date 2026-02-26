@@ -1,0 +1,15 @@
+#!/bin/bash
+set -eou pipefail
+cd "$(dirname "$0")/.."
+
+echo "==> black"
+poetry run black --check src tests
+
+echo "==> isort"
+poetry run isort --check src tests
+
+echo "==> flake8"
+poetry run flake8 src tests
+
+echo "==> autoflake"
+poetry run autoflake --check --remove-all-unused-imports -r src tests

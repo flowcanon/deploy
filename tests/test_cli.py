@@ -20,7 +20,9 @@ def test_deploy_defaults(mock_deploy):
 def test_deploy_with_services(mock_deploy):
     mock_deploy.return_value = 0
     runner = CliRunner()
-    result = runner.invoke(main, ["deploy", "--tag", "v1", "--service", "web", "--service", "worker"])
+    result = runner.invoke(
+        main, ["deploy", "--tag", "v1", "--service", "web", "--service", "worker"]
+    )
     assert result.exit_code == 0
     mock_deploy.assert_called_once_with(tag="v1", services_filter=["web", "worker"], dry_run=False)
 

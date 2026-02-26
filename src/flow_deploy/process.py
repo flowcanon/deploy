@@ -29,7 +29,9 @@ def run(args: list[str], env: dict[str, str] | None = None, cwd: str | None = No
     return Result(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
 
 
-def run_streaming(args: list[str], env: dict[str, str] | None = None, cwd: str | None = None) -> int:
+def run_streaming(
+    args: list[str], env: dict[str, str] | None = None, cwd: str | None = None
+) -> int:
     """Run a command with passthrough stdout/stderr. Returns exit code."""
     merged_env = None
     if env is not None:

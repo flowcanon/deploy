@@ -15,9 +15,7 @@ def get_containers_for_service(service: str, project: str = "") -> list[dict]:
         filters += ["--filter", f"label=com.docker.compose.project={project}"]
     filters += ["--filter", "status=running"]
 
-    result = process.run(
-        ["docker", "ps"] + filters + ["--format", "{{json .}}"]
-    )
+    result = process.run(["docker", "ps"] + filters + ["--format", "{{json .}}"])
     if result.returncode != 0:
         return []
 

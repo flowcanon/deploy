@@ -1,6 +1,5 @@
 """Tests for log.py — timestamped output + GA formatting."""
 
-import os
 import re
 
 

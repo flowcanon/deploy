@@ -14,9 +14,7 @@ from flow_deploy.containers import (
 
 def test_get_containers_for_service(mock_process):
     container = {"ID": "abc123", "Image": "app:v1", "CreatedAt": "2024-01-01", "State": "running"}
-    mock_process.responses.append(
-        process.Result(0, json.dumps(container) + "\n", "")
-    )
+    mock_process.responses.append(process.Result(0, json.dumps(container) + "\n", ""))
     result = get_containers_for_service("web")
     assert len(result) == 1
     assert result[0]["ID"] == "abc123"

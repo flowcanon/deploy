@@ -1,6 +1,6 @@
 """Tests for config.py — service parsing, label extraction, validation."""
 
-from flow_deploy.config import ServiceConfig, parse_services, validate_healthchecks
+from flow_deploy.config import parse_services, validate_healthchecks
 
 
 def _compose_dict(*services):
@@ -10,7 +10,14 @@ def _compose_dict(*services):
 
 def test_parse_ignores_unlabeled():
     d = _compose_dict(
-        ("web", {"image": "app:latest", "labels": {"deploy.role": "app"}, "healthcheck": {"test": ["CMD", "curl", "localhost"]}}),
+        (
+            "web",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app"},
+                "healthcheck": {"test": ["CMD", "curl", "localhost"]},
+            },
+        ),
         ("redis", {"image": "redis:7"}),
     )
     result = parse_services(d)
@@ -20,7 +27,14 @@ def test_parse_ignores_unlabeled():
 
 def test_parse_app_and_accessory():
     d = _compose_dict(
-        ("web", {"image": "app:latest", "labels": {"deploy.role": "app"}, "healthcheck": {"test": ["CMD", "true"]}}),
+        (
+            "web",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        ),
         ("db", {"image": "postgres:16", "labels": {"deploy.role": "accessory"}}),
     )
     result = parse_services(d)
@@ -33,7 +47,14 @@ def test_parse_app_and_accessory():
 
 def test_parse_label_defaults():
     d = _compose_dict(
-        ("web", {"image": "app:latest", "labels": {"deploy.role": "app"}, "healthcheck": {"test": ["CMD", "true"]}}),
+        (
+            "web",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        ),
     )
     svc = parse_services(d)[0]
     assert svc.order == 100
@@ -44,17 +65,20 @@ def test_parse_label_defaults():
 
 def test_parse_custom_labels():
     d = _compose_dict(
-        ("web", {
-            "image": "app:latest",
-            "labels": {
-                "deploy.role": "app",
-                "deploy.order": "10",
-                "deploy.drain": "60",
-                "deploy.healthcheck.timeout": "30",
-                "deploy.healthcheck.poll": "5",
+        (
+            "web",
+            {
+                "image": "app:latest",
+                "labels": {
+                    "deploy.role": "app",
+                    "deploy.order": "10",
+                    "deploy.drain": "60",
+                    "deploy.healthcheck.timeout": "30",
+                    "deploy.healthcheck.poll": "5",
+                },
+                "healthcheck": {"test": ["CMD", "true"]},
             },
-            "healthcheck": {"test": ["CMD", "true"]},
-        }),
+        ),
     )
     svc = parse_services(d)[0]
     assert svc.order == 10
@@ -65,9 +89,30 @@ def test_parse_custom_labels():
 
 def test_parse_sorts_by_order_then_file_order():
     d = _compose_dict(
-        ("worker", {"image": "app:latest", "labels": {"deploy.role": "app", "deploy.order": "200"}, "healthcheck": {"test": ["CMD", "true"]}}),
-        ("web", {"image": "app:latest", "labels": {"deploy.role": "app", "deploy.order": "10"}, "healthcheck": {"test": ["CMD", "true"]}}),
-        ("api", {"image": "app:latest", "labels": {"deploy.role": "app", "deploy.order": "10"}, "healthcheck": {"test": ["CMD", "true"]}}),
+        (
+            "worker",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app", "deploy.order": "200"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        ),
+        (
+            "web",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app", "deploy.order": "10"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        ),
+        (
+            "api",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app", "deploy.order": "10"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        ),
     )
     result = parse_services(d)
     names = [s.name for s in result]
@@ -76,11 +121,14 @@ def test_parse_sorts_by_order_then_file_order():
 
 def test_parse_list_labels():
     d = _compose_dict(
-        ("web", {
-            "image": "app:latest",
-            "labels": ["deploy.role=app", "deploy.order=50"],
-            "healthcheck": {"test": ["CMD", "true"]},
-        }),
+        (
+            "web",
+            {
+                "image": "app:latest",
+                "labels": ["deploy.role=app", "deploy.order=50"],
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        ),
     )
     svc = parse_services(d)[0]
     assert svc.role == "app"
@@ -89,7 +137,14 @@ def test_parse_list_labels():
 
 def test_has_healthcheck_true():
     d = _compose_dict(
-        ("web", {"image": "app:latest", "labels": {"deploy.role": "app"}, "healthcheck": {"test": ["CMD", "curl", "localhost"]}}),
+        (
+            "web",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app"},
+                "healthcheck": {"test": ["CMD", "curl", "localhost"]},
+            },
+        ),
     )
     assert parse_services(d)[0].has_healthcheck
 
@@ -103,14 +158,28 @@ def test_has_healthcheck_false():
 
 def test_has_healthcheck_false_null_test():
     d = _compose_dict(
-        ("web", {"image": "app:latest", "labels": {"deploy.role": "app"}, "healthcheck": {"test": None}}),
+        (
+            "web",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app"},
+                "healthcheck": {"test": None},
+            },
+        ),
     )
     assert not parse_services(d)[0].has_healthcheck
 
 
 def test_validate_healthchecks_returns_missing():
     d = _compose_dict(
-        ("web", {"image": "app:latest", "labels": {"deploy.role": "app"}, "healthcheck": {"test": ["CMD", "true"]}}),
+        (
+            "web",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        ),
         ("worker", {"image": "app:latest", "labels": {"deploy.role": "app"}}),
         ("db", {"image": "postgres:16", "labels": {"deploy.role": "accessory"}}),
     )
@@ -121,7 +190,14 @@ def test_validate_healthchecks_returns_missing():
 
 def test_validate_healthchecks_all_good():
     d = _compose_dict(
-        ("web", {"image": "app:latest", "labels": {"deploy.role": "app"}, "healthcheck": {"test": ["CMD", "true"]}}),
+        (
+            "web",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        ),
     )
     services = parse_services(d)
     assert validate_healthchecks(services) == []
@@ -187,11 +263,14 @@ def test_per_service_labels_override_x_deploy():
 
 def test_no_x_deploy_no_labels():
     d = _compose_dict(
-        ("web", {
-            "image": "app:latest",
-            "labels": {"deploy.role": "app"},
-            "healthcheck": {"test": ["CMD", "true"]},
-        }),
+        (
+            "web",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        ),
     )
     svc = parse_services(d)[0]
     assert svc.host is None

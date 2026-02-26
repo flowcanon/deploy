@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "flow-deploy"
-version = "0.1.0"
+version = "0.1.1"
 description = "Rolling deploys for Docker Compose + Traefik stacks"
 authors = ["Flowcanon"]
 readme = "SPEC.md"
@@ -11,16 +11,18 @@ python = "^3.10"
 click = "^8.1"
 pyyaml = "^6.0"
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.0"
-pytest-cov = "^6.0"
-pytest-randomly = "^3.16"
+[tool.poetry.group.lint.dependencies]
 black = "^24.0"
 isort = "^5.13"
 flake8 = "^7.0"
 flake8-bugbear = "^24.0"
 pep8-naming = "^0.14"
 autoflake = "^2.3"
+
+[tool.poetry.group.test.dependencies]
+pytest = "^8.0"
+pytest-cov = "^6.0"
+pytest-randomly = "^3.16"
 
 [tool.poetry.scripts]
 flow-deploy = "flow_deploy.cli:main"

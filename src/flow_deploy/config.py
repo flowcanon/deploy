@@ -74,9 +74,7 @@ def parse_services(compose_dict: dict) -> list[ServiceConfig]:
                 image=svc.get("image"),
                 order=int(_get_label(labels, "deploy.order", "100")),
                 drain=int(_get_label(labels, "deploy.drain", "30")),
-                healthcheck_timeout=int(
-                    _get_label(labels, "deploy.healthcheck.timeout", "120")
-                ),
+                healthcheck_timeout=int(_get_label(labels, "deploy.healthcheck.timeout", "120")),
                 healthcheck_poll=int(_get_label(labels, "deploy.healthcheck.poll", "2")),
                 has_healthcheck=has_healthcheck,
                 file_order=idx,
