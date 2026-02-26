@@ -10,7 +10,7 @@ RUN apk add --no-cache \
 RUN pip install --no-cache-dir pyinstaller poetry
 
 WORKDIR /build
-COPY pyproject.toml poetry.lock ./
+COPY pyproject.toml poetry.lock SPEC.md ./
 COPY src/ src/
 
 RUN poetry config virtualenvs.create false \
@@ -34,7 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir pyinstaller poetry
 
 WORKDIR /build
-COPY pyproject.toml poetry.lock ./
+COPY pyproject.toml poetry.lock SPEC.md ./
 COPY src/ src/
 
 RUN poetry config virtualenvs.create false \
