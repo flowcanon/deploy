@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Docs — Flow Deploy</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+                    },
+                    typography: {
+                        DEFAULT: {
+                            css: {
+                                'max-width': 'none',
+                            },
+                        },
+                    },
+                },
+            },
+        }
+    </script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tailwindcss/typography@0.5.10/dist/typography.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+
+        /* Prose overrides for dark theme */
+        .prose { color: #cbd5e1; }
+        .prose h1, .prose h2, .prose h3, .prose h4 { color: #f1f5f9; scroll-margin-top: 5rem; }
+        .prose h1 { font-size: 2rem; border-bottom: 1px solid #1e293b; padding-bottom: 0.5rem; }
+        .prose h2 { font-size: 1.5rem; border-bottom: 1px solid #1e293b; padding-bottom: 0.375rem; margin-top: 2.5rem; }
+        .prose h3 { font-size: 1.25rem; margin-top: 2rem; }
+        .prose a { color: #34d399; text-decoration: none; }
+        .prose a:hover { text-decoration: underline; }
+        .prose strong { color: #e2e8f0; }
+        .prose code { color: #6ee7b7; background: rgba(16, 185, 129, 0.1); padding: 0.125rem 0.375rem; border-radius: 0.25rem; font-size: 0.875em; }
+        .prose pre { background: #0f172a; border: 1px solid #1e293b; border-radius: 0.5rem; }
+        .prose pre code { background: none; padding: 0; color: #cbd5e1; }
+        .prose blockquote { border-left-color: #10b981; color: #94a3b8; }
+        .prose table { border-collapse: collapse; width: 100%; }
+        .prose th { background: #0f172a; color: #e2e8f0; border: 1px solid #1e293b; padding: 0.5rem 0.75rem; text-align: left; }
+        .prose td { border: 1px solid #1e293b; padding: 0.5rem 0.75rem; }
+        .prose tr:nth-child(even) { background: rgba(15, 23, 42, 0.5); }
+        .prose hr { border-color: #1e293b; }
+        .prose ul, .prose ol { color: #cbd5e1; }
+        .prose li::marker { color: #10b981; }
+
+        /* TOC styles */
+        #toc a { transition: color 0.15s; }
+        #toc a:hover { color: #f1f5f9; }
+        #toc a.active { color: #34d399; border-left-color: #10b981; }
+        #toc .toc-h2 { padding-left: 0; }
+        #toc .toc-h3 { padding-left: 1rem; font-size: 0.8125rem; }
+
+        /* Scrollbar */
+        #toc-container::-webkit-scrollbar { width: 4px; }
+        #toc-container::-webkit-scrollbar-track { background: transparent; }
+        #toc-container::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-300 antialiased">
+
+    <!-- Nav -->
+    <nav class="fixed top-0 w-full z-50 bg-slate-950/80 backdrop-blur-md border-b border-slate-800/50">
+        <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+            <a href="/" class="flex items-center gap-2 text-white font-semibold text-lg">
+                <svg class="w-6 h-6 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+                Flow Deploy
+            </a>
+            <div class="flex items-center gap-6">
+                <a href="/" class="text-sm text-slate-400 hover:text-white transition-colors">Home</a>
+                <a href="docs.html" class="text-sm text-white transition-colors">Docs</a>
+                <a href="https://github.com/flowcannon/flow-deploy" class="text-sm text-slate-400 hover:text-white transition-colors">GitHub</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="flex max-w-7xl mx-auto pt-16">
+        <!-- Sidebar TOC -->
+        <aside class="hidden lg:block w-64 flex-shrink-0">
+            <div id="toc-container" class="fixed w-64 top-16 bottom-0 overflow-y-auto py-8 px-6 border-r border-slate-800/50">
+                <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">On this page</h4>
+                <nav id="toc" class="space-y-1 text-sm text-slate-400"></nav>
+            </div>
+        </aside>
+
+        <!-- Content -->
+        <main class="flex-1 min-w-0 py-8 px-6 lg:px-12">
+            <article id="content" class="prose prose-invert max-w-none"></article>
+        </main>
+    </div>
+
+    <script>
+        async function loadDocs() {
+            try {
+                const res = await fetch('SPEC.md');
+                if (!res.ok) throw new Error(`Failed to fetch SPEC.md: ${res.status}`);
+                const md = await res.text();
+
+                // Configure marked
+                marked.setOptions({
+                    highlight: function(code, lang) {
+                        if (lang && hljs.getLanguage(lang)) {
+                            return hljs.highlight(code, { language: lang }).value;
+                        }
+                        return hljs.highlightAuto(code).value;
+                    },
+                    gfm: true,
+                    breaks: false,
+                });
+
+                // Render markdown
+                const html = marked.parse(md);
+                document.getElementById('content').innerHTML = html;
+
+                // Build TOC from h2 and h3 elements
+                const headings = document.querySelectorAll('#content h2, #content h3');
+                const toc = document.getElementById('toc');
+                const tocItems = [];
+
+                headings.forEach((heading, i) => {
+                    // Create an ID if none exists
+                    if (!heading.id) {
+                        heading.id = heading.textContent
+                            .toLowerCase()
+                            .replace(/[^\w\s-]/g, '')
+                            .replace(/\s+/g, '-')
+                            .replace(/-+/g, '-')
+                            .trim();
+                    }
+
+                    const level = heading.tagName === 'H2' ? 'toc-h2' : 'toc-h3';
+                    const link = document.createElement('a');
+                    link.href = `#${heading.id}`;
+                    link.textContent = heading.textContent;
+                    link.className = `block py-1 border-l-2 border-transparent pl-3 ${level}`;
+                    toc.appendChild(link);
+                    tocItems.push({ link, heading });
+                });
+
+                // Scroll spy
+                const observer = new IntersectionObserver(
+                    (entries) => {
+                        entries.forEach((entry) => {
+                            if (entry.isIntersecting) {
+                                tocItems.forEach(({ link }) => link.classList.remove('active'));
+                                const match = tocItems.find((t) => t.heading === entry.target);
+                                if (match) match.link.classList.add('active');
+                            }
+                        });
+                    },
+                    { rootMargin: '-80px 0px -70% 0px', threshold: 0 }
+                );
+
+                headings.forEach((h) => observer.observe(h));
+
+                // Highlight remaining code blocks
+                document.querySelectorAll('#content pre code').forEach((block) => {
+                    if (!block.dataset.highlighted) {
+                        hljs.highlightElement(block);
+                    }
+                });
+            } catch (err) {
+                document.getElementById('content').innerHTML =
+                    `<div class="text-red-400 p-8 border border-red-500/20 rounded-lg bg-red-500/5">
+                        <h2 class="text-lg font-semibold mb-2">Failed to load documentation</h2>
+                        <p class="text-sm">${err.message}</p>
+                    </div>`;
+            }
+        }
+
+        loadDocs();
+    </script>
+
+</body>
+</html>

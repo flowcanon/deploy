@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flow Deploy — Minimal Docker Compose Deploys</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+                    },
+                },
+            },
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .gradient-text {
+            background: linear-gradient(135deg, #10b981 0%, #34d399 50%, #6ee7b7 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .card-glow:hover {
+            box-shadow: 0 0 30px rgba(16, 185, 129, 0.1);
+        }
+        .terminal {
+            background: #0c0c0c;
+            border: 1px solid #1e293b;
+        }
+        .terminal-header {
+            background: #1e293b;
+        }
+        .terminal-dot { width: 12px; height: 12px; border-radius: 50%; }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-300 antialiased">
+
+    <!-- Nav -->
+    <nav class="fixed top-0 w-full z-50 bg-slate-950/80 backdrop-blur-md border-b border-slate-800/50">
+        <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+            <a href="/" class="flex items-center gap-2 text-white font-semibold text-lg">
+                <svg class="w-6 h-6 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+                Flow Deploy
+            </a>
+            <div class="flex items-center gap-6">
+                <a href="docs.html" class="text-sm text-slate-400 hover:text-white transition-colors">Docs</a>
+                <a href="https://github.com/flowcannon/flow-deploy" class="text-sm text-slate-400 hover:text-white transition-colors">GitHub</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <section class="pt-32 pb-20 px-6">
+        <div class="max-w-4xl mx-auto text-center">
+            <h1 class="text-5xl sm:text-6xl font-bold text-white mb-6 leading-tight">
+                Docker Compose deploys,<br>
+                <span class="gradient-text">without the baggage.</span>
+            </h1>
+            <p class="text-lg sm:text-xl text-slate-400 max-w-2xl mx-auto mb-10 leading-relaxed">
+                A minimal, opinionated deployment tool for Docker Compose + Traefik stacks.
+                Rolling deploys, health checks, automatic rollback.
+                Your <code class="text-emerald-400 bg-slate-800/50 px-1.5 py-0.5 rounded text-base">docker-compose.yml</code> is the single source of truth.
+            </p>
+            <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                <a href="docs.html" class="inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-6 py-3 rounded-lg transition-colors">
+                    Read the Spec
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                    </svg>
+                </a>
+                <a href="https://github.com/flowcannon/flow-deploy" class="inline-flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-white font-medium px-6 py-3 rounded-lg border border-slate-700 transition-colors">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    GitHub
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Design Principles -->
+    <section class="py-20 px-6 border-t border-slate-800/50">
+        <div class="max-w-6xl mx-auto">
+            <h2 class="text-3xl font-bold text-white mb-4 text-center">Design Principles</h2>
+            <p class="text-slate-400 text-center mb-12 max-w-2xl mx-auto">Every decision flows from these constraints.</p>
+            <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-6 card-glow transition-all">
+                    <div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center mb-4">
+                        <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                    </div>
+                    <h3 class="text-white font-semibold mb-2">Compose is truth</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">No <code class="text-emerald-400/80">deploy.yml</code>, no parallel declarations. The tool reads <code class="text-emerald-400/80">docker-compose.yml</code> and does its work.</p>
+                </div>
+                <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-6 card-glow transition-all">
+                    <div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center mb-4">
+                        <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"/></svg>
+                    </div>
+                    <h3 class="text-white font-semibold mb-2">Two layers, clean split</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">Server-side CLI handles single-node deploys. GitHub Action handles fleet orchestration and SSH fan-out.</p>
+                </div>
+                <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-6 card-glow transition-all">
+                    <div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center mb-4">
+                        <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
+                    </div>
+                    <h3 class="text-white font-semibold mb-2">Accessories left alone</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">Databases, caches, and stateful services are never restarted during a deploy unless explicitly requested.</p>
+                </div>
+                <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-6 card-glow transition-all">
+                    <div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center mb-4">
+                        <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+                    </div>
+                    <h3 class="text-white font-semibold mb-2">Builds happen in CI</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">The tool does not build images. GitHub Actions builds and pushes to GHCR. The tool pulls and swaps.</p>
+                </div>
+                <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-6 card-glow transition-all">
+                    <div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center mb-4">
+                        <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                    </div>
+                    <h3 class="text-white font-semibold mb-2">Failure is a no-op</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">If a new container fails health checks, the old container continues serving traffic untouched. The deploy exits nonzero.</p>
+                </div>
+                <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-6 card-glow transition-all">
+                    <div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center mb-4">
+                        <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                    </div>
+                    <h3 class="text-white font-semibold mb-2">Logging is the interface</h3>
+                    <p class="text-slate-400 text-sm leading-relaxed">All output is structured, human-readable, and designed to flow through SSH back into GitHub Actions logs.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Deploy Lifecycle -->
+    <section class="py-20 px-6 border-t border-slate-800/50">
+        <div class="max-w-4xl mx-auto">
+            <h2 class="text-3xl font-bold text-white mb-4 text-center">Deploy Lifecycle</h2>
+            <p class="text-slate-400 text-center mb-12 max-w-2xl mx-auto">For each <code class="text-emerald-400/80">deploy.role=app</code> service, in order:</p>
+            <div class="relative">
+                <!-- Vertical line -->
+                <div class="absolute left-6 top-0 bottom-0 w-px bg-slate-800 hidden sm:block"></div>
+                <div class="space-y-8">
+                    <div class="flex items-start gap-6">
+                        <div class="relative z-10 flex-shrink-0 w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
+                            <span class="text-emerald-400 font-mono font-bold text-sm">1</span>
+                        </div>
+                        <div class="pt-2">
+                            <h3 class="text-white font-semibold">Pull new image</h3>
+                            <code class="text-sm text-slate-500 font-mono">&lt;compose-command&gt; pull &lt;service&gt;</code>
+                        </div>
+                    </div>
+                    <div class="flex items-start gap-6">
+                        <div class="relative z-10 flex-shrink-0 w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
+                            <span class="text-emerald-400 font-mono font-bold text-sm">2</span>
+                        </div>
+                        <div class="pt-2">
+                            <h3 class="text-white font-semibold">Scale up</h3>
+                            <code class="text-sm text-slate-500 font-mono">up -d --no-deps --no-recreate --scale &lt;service&gt;=2</code>
+                        </div>
+                    </div>
+                    <div class="flex items-start gap-6">
+                        <div class="relative z-10 flex-shrink-0 w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
+                            <span class="text-emerald-400 font-mono font-bold text-sm">3</span>
+                        </div>
+                        <div class="pt-2">
+                            <h3 class="text-white font-semibold">Health check</h3>
+                            <p class="text-sm text-slate-400">Poll new container via <code class="text-emerald-400/80">docker inspect</code> until healthy or timeout</p>
+                        </div>
+                    </div>
+                    <div class="flex items-start gap-6">
+                        <div class="relative z-10 flex-shrink-0 w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
+                            <span class="text-emerald-400 font-mono font-bold text-sm">4</span>
+                        </div>
+                        <div class="pt-2">
+                            <h3 class="text-white font-semibold">Cutover or rollback</h3>
+                            <p class="text-sm text-slate-400">
+                                <span class="text-emerald-400">Healthy?</span> Graceful shutdown of old container, scale back to 1.<br>
+                                <span class="text-red-400">Unhealthy?</span> Remove new container, old continues serving. Exit 1.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Quick Start -->
+    <section class="py-20 px-6 border-t border-slate-800/50">
+        <div class="max-w-4xl mx-auto">
+            <h2 class="text-3xl font-bold text-white mb-4 text-center">Quick Start</h2>
+            <p class="text-slate-400 text-center mb-12">Up and running in under a minute.</p>
+            <div class="terminal rounded-xl overflow-hidden">
+                <div class="terminal-header px-4 py-3 flex items-center gap-2">
+                    <div class="terminal-dot bg-red-500/80"></div>
+                    <div class="terminal-dot bg-yellow-500/80"></div>
+                    <div class="terminal-dot bg-green-500/80"></div>
+                    <span class="ml-3 text-xs text-slate-500 font-mono">terminal</span>
+                </div>
+                <div class="p-6 font-mono text-sm leading-relaxed overflow-x-auto">
+<pre class="text-slate-300"><span class="text-slate-500"># Install</span>
+<span class="text-emerald-400">$</span> git clone https://github.com/flowcannon/flow-deploy.git /opt/flow-deploy
+<span class="text-emerald-400">$</span> pip install -e /opt/flow-deploy
+
+<span class="text-slate-500"># Label your services in docker-compose.yml</span>
+<span class="text-emerald-400">$</span> cat docker-compose.yml
+<span class="text-slate-500">services:</span>
+<span class="text-slate-500">  web:</span>
+<span class="text-slate-500">    image: ghcr.io/myorg/myapp:${DEPLOY_TAG:-latest}</span>
+<span class="text-slate-500">    labels:</span>
+<span class="text-slate-500">      deploy.role: app</span>
+<span class="text-slate-500">    healthcheck:</span>
+<span class="text-slate-500">      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]</span>
+
+<span class="text-slate-500"># Deploy</span>
+<span class="text-emerald-400">$</span> flow-deploy deploy --tag abc123f
+<span class="text-slate-400">[12:34:56] ── deploy ──────────────────────────────</span>
+<span class="text-slate-400">[12:34:56] tag: abc123f</span>
+<span class="text-slate-400">[12:34:58] ▸ web</span>
+<span class="text-slate-400">[12:35:11]   ✓ web deployed (16.1s)</span>
+<span class="text-slate-400">[12:35:11] ── complete (16.1s) ─────────────────────</span></pre>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CLI Commands -->
+    <section class="py-20 px-6 border-t border-slate-800/50">
+        <div class="max-w-6xl mx-auto">
+            <h2 class="text-3xl font-bold text-white mb-4 text-center">CLI Commands</h2>
+            <p class="text-slate-400 text-center mb-12">Everything you need. Nothing you don't.</p>
+            <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-5">
+                    <code class="text-emerald-400 font-mono text-sm font-medium">deploy</code>
+                    <p class="text-slate-400 text-sm mt-2">Rolling deploy of all app services. Supports <code class="text-slate-500">--tag</code>, <code class="text-slate-500">--service</code>, <code class="text-slate-500">--dry-run</code>.</p>
+                </div>
+                <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-5">
+                    <code class="text-emerald-400 font-mono text-sm font-medium">rollback</code>
+                    <p class="text-slate-400 text-sm mt-2">Rollback to the previously deployed image tag from <code class="text-slate-500">.deploy-tag</code> history.</p>
+                </div>
+                <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-5">
+                    <code class="text-emerald-400 font-mono text-sm font-medium">status</code>
+                    <p class="text-slate-400 text-sm mt-2">Show current state of all managed services: container ID, image, health, uptime.</p>
+                </div>
+                <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-5">
+                    <code class="text-emerald-400 font-mono text-sm font-medium">exec</code>
+                    <p class="text-slate-400 text-sm mt-2">Run a command inside a running service container.</p>
+                </div>
+                <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-5">
+                    <code class="text-emerald-400 font-mono text-sm font-medium">logs</code>
+                    <p class="text-slate-400 text-sm mt-2">Tail logs for a service. Supports <code class="text-slate-500">--follow</code> and <code class="text-slate-500">--tail</code>.</p>
+                </div>
+                <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-5">
+                    <code class="text-emerald-400 font-mono text-sm font-medium">self-upgrade</code>
+                    <p class="text-slate-400 text-sm mt-2">Update the tool to the latest version via <code class="text-slate-500">git pull && pip install -e</code>.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="py-12 px-6 border-t border-slate-800/50">
+        <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div class="flex items-center gap-2 text-slate-500 text-sm">
+                <svg class="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+                Flow Deploy
+            </div>
+            <div class="flex items-center gap-6 text-sm text-slate-500">
+                <a href="docs.html" class="hover:text-slate-300 transition-colors">Docs</a>
+                <a href="https://github.com/flowcannon/flow-deploy" class="hover:text-slate-300 transition-colors">GitHub</a>
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>

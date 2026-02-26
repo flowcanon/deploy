@@ -1,0 +1,26 @@
+services:
+  docs:
+    image: flowcanon/flow-deploy-docs:${DOCKER_IMAGE_TAG:-latest}
+    build: .
+    env_file: ./.env
+    networks:
+      - traefik
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    labels:
+      - traefik.docker.network=traefik
+      - traefik.enable=true
+      - traefik.http.routers.flow-deploy-docs.entrypoints=web,websecure
+      - traefik.http.routers.flow-deploy-docs.middlewares=compression,securityheaders
+      - traefik.http.routers.flow-deploy-docs.rule=Host(`${DOMAIN}`)
+      - traefik.http.routers.flow-deploy-docs.tls.certresolver=letsencrypt
+      - traefik.http.routers.flow-deploy-docs.tls=${TLS_ENABLED:-false}
+      - traefik.http.services.flow-deploy-docs.loadbalancer.server.port=80
+    restart: unless-stopped
+
+networks:
+  traefik:
+    external: true
