@@ -91,42 +91,42 @@
                         <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                     </div>
                     <h3 class="text-white font-semibold mb-2">Compose is truth</h3>
-                    <p class="text-slate-400 text-sm leading-relaxed">No <code class="text-emerald-400/80">deploy.yml</code>, no parallel declarations. The tool reads <code class="text-emerald-400/80">docker-compose.yml</code> and does its work.</p>
+                    <p class="text-slate-400 text-sm leading-relaxed">No <code class="text-emerald-400/80">deploy.yml</code>, no parallel config. Your <code class="text-emerald-400/80">docker-compose.yml</code> is all there is.</p>
                 </div>
                 <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-6 card-glow transition-all">
                     <div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center mb-4">
                         <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"/></svg>
                     </div>
                     <h3 class="text-white font-semibold mb-2">Two layers, clean split</h3>
-                    <p class="text-slate-400 text-sm leading-relaxed">Server-side CLI handles single-node deploys. GitHub Action handles fleet orchestration and SSH fan-out.</p>
+                    <p class="text-slate-400 text-sm leading-relaxed">CLI on each node, GitHub Action across the fleet. One deploys, the other orchestrates.</p>
                 </div>
                 <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-6 card-glow transition-all">
                     <div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center mb-4">
                         <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
                     </div>
                     <h3 class="text-white font-semibold mb-2">Accessories left alone</h3>
-                    <p class="text-slate-400 text-sm leading-relaxed">Databases, caches, and stateful services are never restarted during a deploy unless explicitly requested.</p>
+                    <p class="text-slate-400 text-sm leading-relaxed">Databases, caches, and stateful services stay running. Only app containers get touched.</p>
                 </div>
                 <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-6 card-glow transition-all">
                     <div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center mb-4">
                         <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
                     </div>
                     <h3 class="text-white font-semibold mb-2">Builds happen in CI</h3>
-                    <p class="text-slate-400 text-sm leading-relaxed">The tool does not build images. GitHub Actions builds and pushes to GHCR. The tool pulls and swaps.</p>
+                    <p class="text-slate-400 text-sm leading-relaxed">CI builds and pushes images. The server just pulls and swaps.</p>
                 </div>
                 <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-6 card-glow transition-all">
                     <div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center mb-4">
                         <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
                     </div>
                     <h3 class="text-white font-semibold mb-2">Failure is a no-op</h3>
-                    <p class="text-slate-400 text-sm leading-relaxed">If a new container fails health checks, the old container continues serving traffic untouched. The deploy exits nonzero.</p>
+                    <p class="text-slate-400 text-sm leading-relaxed">Failed health check? The old container keeps serving. Nothing changes until the new one is healthy.</p>
                 </div>
                 <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-6 card-glow transition-all">
                     <div class="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center mb-4">
                         <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
                     </div>
                     <h3 class="text-white font-semibold mb-2">Logging is the interface</h3>
-                    <p class="text-slate-400 text-sm leading-relaxed">All output is structured, human-readable, and designed to flow through SSH back into GitHub Actions logs.</p>
+                    <p class="text-slate-400 text-sm leading-relaxed">Structured, readable output that flows cleanly through SSH into your CI logs.</p>
                 </div>
             </div>
         </div>
