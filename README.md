@@ -1,5 +1,11 @@
 # Flow Deploy
 
+[![CI](https://github.com/flowcanon/deploy/actions/workflows/ci.yml/badge.svg)](https://github.com/flowcanon/deploy/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/flowcanon/deploy)](https://github.com/flowcanon/deploy/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Coverage: 90%+](https://img.shields.io/badge/coverage-90%25+-brightgreen)](https://github.com/flowcanon/deploy/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
+
 Minimal, opinionated rolling deploys for Docker Compose + Traefik stacks.
 
 Replaces Kamal's useful subset — rolling deploys, health checks, automatic rollback — without its baggage.
