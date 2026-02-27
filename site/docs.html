@@ -110,6 +110,12 @@
             'spec': 'SPEC.md',
         };
 
+        // Reverse map: file path → hash (for intercepting markdown links)
+        const FILE_TO_HASH = {};
+        for (const [hash, file] of Object.entries(DOCS)) {
+            FILE_TO_HASH[file] = hash;
+        }
+
         let currentObserver = null;
 
         function getDocFromHash() {
@@ -217,6 +223,22 @@
                 history.pushState(null, '', link.href);
                 loadDoc(DOCS[hash] || DOCS['']);
             });
+        });
+
+        // Intercept clicks on internal doc links (event delegation)
+        document.getElementById('content').addEventListener('click', (e) => {
+            const a = e.target.closest('a');
+            if (!a) return;
+            const href = a.getAttribute('href');
+            if (!href) return;
+            for (const [file, hash] of Object.entries(FILE_TO_HASH)) {
+                if (href === file) {
+                    e.preventDefault();
+                    history.pushState(null, '', hash ? `docs.html#${hash}` : 'docs.html');
+                    loadDoc(DOCS[hash]);
+                    return;
+                }
+            }
         });
 
         // Handle browser back/forward
