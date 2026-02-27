@@ -157,9 +157,22 @@ services:
 | `deploy.user` | `x-deploy.user` | SSH user for this service |
 | `deploy.dir` | `x-deploy.dir` | Project directory on the remote host |
 
-Resolution: per-service label wins, then `x-deploy` default, then error if neither is set.
+**Resolution order** (highest priority wins):
 
-The GitHub Action (§7) reads these values by running `<compose-command> config` in CI, which outputs the fully merged YAML with all overrides applied. It then groups services by host and SSHes to each one.
+1. GitHub Actions environment variable (`HOST_NAME`, `HOST_USER`, `SSH_PORT`)
+2. Per-service label (`deploy.host`, `deploy.user`, `deploy.dir`)
+3. Top-level `x-deploy` default
+4. Error if none is set (for `host`)
+
+Environment variable overrides exist because `x-deploy` values are committed to the repository. For public repos, operators may prefer to keep hostnames, usernames, and SSH ports out of version control. GitHub Actions [environment variables](https://docs.github.com/en/actions/learn-github-actions/variables) provide this — set them in a GitHub environment and reference them in the deploy workflow.
+
+| Environment Variable | Overrides | Description |
+|---|---|---|
+| `HOST_NAME` | `x-deploy.host` / `deploy.host` | SSH hostname for all services |
+| `HOST_USER` | `x-deploy.user` / `deploy.user` | SSH user for all services |
+| `SSH_PORT` | *(default 22)* | SSH port for all connections |
+
+The GitHub Action (§7) reads these values by running `<compose-command> config` in CI, which outputs the fully merged YAML with all overrides applied. It then groups services by host, applies any environment variable overrides, and SSHes to each one.
 
 ### 2.7 Pre-Deploy and Post-Deploy Hooks
 
@@ -303,15 +316,15 @@ Tail logs for a service. Convenience wrapper around `docker compose logs`.
 flow-deploy logs <service> [--follow] [--tail N]
 ```
 
-### 4.6 `flow-deploy self-upgrade`
+### 4.6 `flow-deploy upgrade`
 
-Update the tool to the latest version from its Git repository.
+Update the tool to the latest release.
 
 ```
-flow-deploy self-upgrade
+flow-deploy upgrade
 ```
 
-This performs: `git -C <install-path> pull && pip install -e <install-path>`. The tool knows its own install path.
+This detects the system's libc (musl or glibc), downloads the latest binary from the GitHub release, and atomically replaces the current binary. Works when run manually on the server or via SSH from a CI pipeline.
 
 ---
 
@@ -443,7 +456,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: flowcannon/flow-deploy-action@v1
+      - uses: flowcanon/deploy/.github/actions/deploy@master
         with:
           tag: ${{ needs.build.outputs.tag }}
           ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -455,7 +468,7 @@ The `command` input tells the action which compose wrapper to use for config par
 For staging, swap the wrapper:
 
 ```yaml
-      - uses: flowcannon/flow-deploy-action@v1
+      - uses: flowcanon/deploy/.github/actions/deploy@master
         with:
           tag: ${{ needs.build.outputs.tag }}
           ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -488,15 +501,14 @@ This is the simplest possible deploy: one SSH call, no action, no host discovery
 ### 8.1 Server Setup (One-Time)
 
 ```bash
-# Clone the tool
-git clone https://github.com/flowcannon/flow-deploy.git /opt/flow-deploy
-
-# Install (editable, so self-upgrade via git pull works)
-pip install -e /opt/flow-deploy
+# Install the latest binary
+curl -fsSL https://deploy.flowcanon.com/install | sh
 
 # Verify
 flow-deploy --version
 ```
+
+This installs a standalone binary to `~/.local/bin`. Set `INSTALL_DIR` to install elsewhere. The installer detects the system's libc (musl or glibc) and downloads the appropriate binary from GitHub releases.
 
 ### 8.2 Per-Project Setup (One-Time)
 
@@ -522,12 +534,12 @@ script/prod up -d postgres redis
 flow-deploy deploy --tag latest
 ```
 
-### 8.3 Self-Upgrade Across a Fleet
+### 8.3 Upgrading Across a Fleet
 
 ```bash
 # From GitHub Actions or any CI — upgrade all hosts then deploy
 for host in web1 web2 web3; do
-  ssh deploy@$host "flow-deploy self-upgrade"
+  ssh deploy@$host "flow-deploy upgrade"
 done
 ```
 
@@ -537,7 +549,7 @@ Or embed it in the deploy workflow:
 - name: Upgrade and Deploy
   run: |
     ssh deploy@${{ secrets.PROD_HOST }} \
-      "flow-deploy self-upgrade && \
+      "flow-deploy upgrade && \
        cd /srv/myapp && flow-deploy deploy --tag ${{ needs.build.outputs.tag }}"
 ```
 
@@ -545,17 +557,19 @@ Or embed it in the deploy workflow:
 
 ## 9. Configuration Summary
 
-The tool has zero configuration files. All behavior is controlled by `x-deploy` defaults and labels on services in `docker-compose.yml`:
+The tool has zero configuration files. All behavior is controlled by `x-deploy` defaults, labels on services in `docker-compose.yml`, and optional environment variable overrides:
 
 **Top-level defaults** (via `x-deploy`):
 
 | Key | Required | Description |
 |---|---|---|
-| `x-deploy.host` | Yes | Default SSH hostname |
-| `x-deploy.user` | Yes | Default SSH user |
-| `x-deploy.dir` | Yes | Default project directory on remote host |
+| `x-deploy.host` | No* | Default SSH hostname |
+| `x-deploy.user` | No* | Default SSH user |
+| `x-deploy.dir` | No | Default project directory on remote host |
 
-**Per-service labels** (override defaults when needed):
+\* Required unless overridden by an environment variable or per-service label.
+
+**Per-service labels** (override `x-deploy` defaults):
 
 | Label | Required | Default | Description |
 |---|---|---|---|
@@ -567,6 +581,16 @@ The tool has zero configuration files. All behavior is controlled by `x-deploy` 
 | `deploy.drain` | No | `30` | Seconds to wait after SIGTERM before SIGKILL |
 | `deploy.healthcheck.timeout` | No | `120` | Seconds before rollback |
 | `deploy.healthcheck.poll` | No | `2` | Seconds between polls |
+
+**Environment variable overrides** (highest priority, set via GitHub Actions environment):
+
+| Variable | Overrides | Description |
+|---|---|---|
+| `HOST_NAME` | `deploy.host` / `x-deploy.host` | SSH hostname for all services |
+| `HOST_USER` | `deploy.user` / `x-deploy.user` | SSH user for all services |
+| `SSH_PORT` | *(default 22)* | SSH port for all connections |
+
+These are useful for public repositories where hostnames and usernames should not be committed to version control.
 
 Plus the standard Docker/Traefik labels you're already using.
 

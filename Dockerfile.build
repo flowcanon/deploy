@@ -21,6 +21,7 @@ RUN pyinstaller \
     --name flow-deploy-linux-musl \
     --strip \
     --noupx \
+    --copy-metadata flow-deploy \
     src/flow_deploy/cli.py
 
 # --- glibc (Ubuntu/Debian) ---
@@ -45,6 +46,7 @@ RUN pyinstaller \
     --name flow-deploy-linux-glibc \
     --strip \
     --noupx \
+    --copy-metadata flow-deploy \
     src/flow_deploy/cli.py
 
 # --- collect both binaries ---

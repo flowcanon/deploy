@@ -109,7 +109,7 @@ services:
       deploy.host: worker-1.example.com  # override per-service
 ```
 
-Resolution order: per-service label > `x-deploy` default > GitHub Actions variable.
+Resolution order: GitHub Actions variable > per-service label > `x-deploy` default.
 
 See [GitHub Actions Setup](docs/github-actions.md) for CI/CD integration.
 
@@ -121,6 +121,7 @@ flow-deploy rollback [--service NAME]
 flow-deploy status
 flow-deploy exec SERVICE COMMAND...
 flow-deploy logs SERVICE [-f] [-n LINES]
+flow-deploy upgrade
 ```
 
 ## Compose Command Resolution
