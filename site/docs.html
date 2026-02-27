@@ -77,7 +77,7 @@
             <div class="flex items-center gap-6">
                 <a href="/" class="text-sm text-slate-400 hover:text-white transition-colors">Home</a>
                 <a href="docs.html" class="text-sm text-white transition-colors">Docs</a>
-                <a href="https://github.com/flowcannon/flow-deploy" class="text-sm text-slate-400 hover:text-white transition-colors">GitHub</a>
+                <a href="https://github.com/flowcanon/deploy" class="text-sm text-slate-400 hover:text-white transition-colors">GitHub</a>
             </div>
         </div>
     </nav>
@@ -86,6 +86,12 @@
         <!-- Sidebar TOC -->
         <aside class="hidden lg:block w-64 flex-shrink-0">
             <div id="toc-container" class="fixed w-64 top-16 bottom-0 overflow-y-auto py-8 px-6 border-r border-slate-800/50">
+                <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">Documentation</h4>
+                <nav id="doc-nav" class="space-y-1 text-sm mb-6">
+                    <a href="docs.html" data-doc="README.md" class="doc-link block py-1.5 px-3 rounded-md text-slate-400 hover:text-white hover:bg-slate-800/50 transition-colors">Getting Started</a>
+                    <a href="docs.html#github-actions" data-doc="docs/github-actions.md" class="doc-link block py-1.5 px-3 rounded-md text-slate-400 hover:text-white hover:bg-slate-800/50 transition-colors">GitHub Actions</a>
+                    <a href="docs.html#spec" data-doc="SPEC.md" class="doc-link block py-1.5 px-3 rounded-md text-slate-400 hover:text-white hover:bg-slate-800/50 transition-colors">Specification</a>
+                </nav>
                 <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">On this page</h4>
                 <nav id="toc" class="space-y-1 text-sm text-slate-400"></nav>
             </div>
@@ -98,13 +104,34 @@
     </div>
 
     <script>
-        async function loadDocs() {
+        const DOCS = {
+            '': 'README.md',
+            'github-actions': 'docs/github-actions.md',
+            'spec': 'SPEC.md',
+        };
+
+        let currentObserver = null;
+
+        function getDocFromHash() {
+            const hash = location.hash.replace('#', '');
+            return DOCS[hash] || DOCS[''];
+        }
+
+        function updateActiveNav(docFile) {
+            document.querySelectorAll('.doc-link').forEach(link => {
+                const isActive = link.dataset.doc === docFile;
+                link.classList.toggle('text-white', isActive);
+                link.classList.toggle('bg-slate-800/50', isActive);
+                link.classList.toggle('text-slate-400', !isActive);
+            });
+        }
+
+        async function loadDoc(docFile) {
             try {
-                const res = await fetch('SPEC.md');
-                if (!res.ok) throw new Error(`Failed to fetch SPEC.md: ${res.status}`);
+                const res = await fetch(docFile);
+                if (!res.ok) throw new Error(`Failed to fetch ${docFile}: ${res.status}`);
                 const md = await res.text();
 
-                // Configure marked
                 marked.setOptions({
                     highlight: function(code, lang) {
                         if (lang && hljs.getLanguage(lang)) {
@@ -116,17 +143,16 @@
                     breaks: false,
                 });
 
-                // Render markdown
-                const html = marked.parse(md);
-                document.getElementById('content').innerHTML = html;
+                document.getElementById('content').innerHTML = marked.parse(md);
+                updateActiveNav(docFile);
 
-                // Build TOC from h2 and h3 elements
+                // Build TOC
                 const headings = document.querySelectorAll('#content h2, #content h3');
                 const toc = document.getElementById('toc');
+                toc.innerHTML = '';
                 const tocItems = [];
 
-                headings.forEach((heading, i) => {
-                    // Create an ID if none exists
+                headings.forEach((heading) => {
                     if (!heading.id) {
                         heading.id = heading.textContent
                             .toLowerCase()
@@ -141,12 +167,17 @@
                     link.href = `#${heading.id}`;
                     link.textContent = heading.textContent;
                     link.className = `block py-1 border-l-2 border-transparent pl-3 ${level}`;
+                    link.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        heading.scrollIntoView({ behavior: 'smooth' });
+                    });
                     toc.appendChild(link);
                     tocItems.push({ link, heading });
                 });
 
                 // Scroll spy
-                const observer = new IntersectionObserver(
+                if (currentObserver) currentObserver.disconnect();
+                currentObserver = new IntersectionObserver(
                     (entries) => {
                         entries.forEach((entry) => {
                             if (entry.isIntersecting) {
@@ -158,15 +189,17 @@
                     },
                     { rootMargin: '-80px 0px -70% 0px', threshold: 0 }
                 );
+                headings.forEach((h) => currentObserver.observe(h));
 
-                headings.forEach((h) => observer.observe(h));
-
-                // Highlight remaining code blocks
+                // Highlight code blocks
                 document.querySelectorAll('#content pre code').forEach((block) => {
                     if (!block.dataset.highlighted) {
                         hljs.highlightElement(block);
                     }
                 });
+
+                // Scroll to top on doc change
+                window.scrollTo(0, 0);
             } catch (err) {
                 document.getElementById('content').innerHTML =
                     `<div class="text-red-400 p-8 border border-red-500/20 rounded-lg bg-red-500/5">
@@ -176,7 +209,21 @@
             }
         }
 
-        loadDocs();
+        // Handle doc nav clicks
+        document.querySelectorAll('.doc-link').forEach(link => {
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                const hash = new URL(link.href).hash.replace('#', '');
+                history.pushState(null, '', link.href);
+                loadDoc(DOCS[hash] || DOCS['']);
+            });
+        });
+
+        // Handle browser back/forward
+        window.addEventListener('hashchange', () => loadDoc(getDocFromHash()));
+
+        // Initial load
+        loadDoc(getDocFromHash());
     </script>
 
     <!-- Footer -->
@@ -188,7 +235,7 @@
             <div class="flex items-center gap-6 text-sm text-slate-500">
                 <a href="/" class="hover:text-slate-300 transition-colors">Home</a>
                 <a href="docs.html" class="hover:text-slate-300 transition-colors">Docs</a>
-                <a href="https://github.com/flowcannon/flow-deploy" class="hover:text-slate-300 transition-colors">GitHub</a>
+                <a href="https://github.com/flowcanon/deploy" class="hover:text-slate-300 transition-colors">GitHub</a>
             </div>
         </div>
     </footer>
