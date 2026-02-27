@@ -65,10 +65,15 @@ runs:
 
           if [ -n "$REGISTRY_TOKEN" ]; then
             echo "$REGISTRY_TOKEN" | ssh -o StrictHostKeyChecking=no "${port_args[@]}" "$user@$host" \
-              "docker login ghcr.io -u ${{ github.actor }} --password-stdin"
+              "docker login ghcr.io -u ${{ github.actor }} --password-stdin 2>/dev/null"
           fi
 
           ssh -o StrictHostKeyChecking=no "${port_args[@]}" "$user@$host" \
-            "cd $dir && flow-deploy deploy --tag $DEPLOY_TAG"
+            "cd $dir && git pull --ff-only || { echo 'Deploy aborted: could not fast-forward. Check for local changes or diverged history on the server.'; exit 1; } && flow-deploy deploy --tag $DEPLOY_TAG"
+
+          if [ -n "$REGISTRY_TOKEN" ]; then
+            ssh -o StrictHostKeyChecking=no "${port_args[@]}" "$user@$host" \
+              "docker logout ghcr.io 2>/dev/null"
+          fi
           echo "::endgroup::"
         done
