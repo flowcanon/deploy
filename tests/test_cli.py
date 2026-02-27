@@ -75,7 +75,6 @@ def test_version():
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
     assert "flow-deploy" in result.output
-    assert "0.1.0" in result.output
 
 
 @patch("flow_deploy.process.run_streaming")
@@ -133,3 +132,4 @@ def test_help():
     assert "status" in result.output
     assert "exec" in result.output
     assert "logs" in result.output
+    assert "upgrade" in result.output

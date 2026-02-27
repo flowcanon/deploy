@@ -95,5 +95,13 @@ def logs(service, follow, tail):
     sys.exit(code)
 
 
+@main.command()
+def upgrade():
+    """Upgrade flow-deploy to the latest release."""
+    from flow_deploy import upgrade as upgrade_mod
+
+    sys.exit(upgrade_mod.upgrade())
+
+
 if __name__ == "__main__":
     main()
