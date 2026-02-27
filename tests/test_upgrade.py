@@ -129,6 +129,7 @@ def test_upgrade_no_binary(mock_path):
 def test_upgrade_cli(mock_libc, mock_path, mock_dl, tmp_path):
     """Upgrade command via CLI."""
     from click.testing import CliRunner
+
     from flow_deploy.cli import main
 
     binary = tmp_path / "flow-deploy"

@@ -13,9 +13,7 @@ REPO = "flowcanon/deploy"
 def _detect_libc() -> str:
     """Detect whether the system uses musl or glibc."""
     try:
-        result = subprocess.run(
-            ["ldd", "/bin/ls"], capture_output=True, text=True, timeout=5
-        )
+        result = subprocess.run(["ldd", "/bin/ls"], capture_output=True, text=True, timeout=5)
         if "musl" in result.stdout.lower() or "musl" in result.stderr.lower():
             return "musl"
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -38,13 +36,9 @@ def _binary_path() -> str:
 def _download(url: str, dest: str) -> None:
     """Download a URL to a local path using curl or wget."""
     if shutil.which("curl"):
-        subprocess.run(
-            ["curl", "-fsSL", "-o", dest, url], check=True, timeout=120
-        )
+        subprocess.run(["curl", "-fsSL", "-o", dest, url], check=True, timeout=120)
     elif shutil.which("wget"):
-        subprocess.run(
-            ["wget", "-qO", dest, url], check=True, timeout=120
-        )
+        subprocess.run(["wget", "-qO", dest, url], check=True, timeout=120)
     else:
         raise RuntimeError("curl or wget required")
 
