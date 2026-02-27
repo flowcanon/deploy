@@ -2,7 +2,7 @@
 set -eu
 
 REPO="flowcanon/deploy"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 BINARY_NAME="flow-deploy"
 
 # Detect libc
@@ -17,6 +17,8 @@ detect_libc() {
 LIBC=$(detect_libc)
 URL="https://github.com/${REPO}/releases/latest/download/flow-deploy-linux-${LIBC}"
 
+mkdir -p "$INSTALL_DIR"
+
 echo "Detected libc: ${LIBC}"
 echo "Downloading flow-deploy from ${URL}..."
 
@@ -30,4 +32,9 @@ else
 fi
 
 chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
-echo "Installed: $(${BINARY_NAME} --version)"
+echo "Installed: ${INSTALL_DIR}/${BINARY_NAME}"
+
+case ":$PATH:" in
+    *":${INSTALL_DIR}:"*) ;;
+    *) echo "Note: ${INSTALL_DIR} is not in your current PATH. Start a new login shell or add it to your PATH." ;;
+esac

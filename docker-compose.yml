@@ -1,7 +1,7 @@
 x-deploy:
   host: deploy.flowcanon.com
   user: deploy
-  dir: /srv/flow-deploy-docs
+  dir: /opt/flowcanon/deploy
 
 services:
   docs:
