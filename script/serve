@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+
+cd "$(dirname "$0")/.."
+ROOT="$(pwd)"
+
+# Serve the docs site locally with live reload.
+# Symlinks mirror the Dockerfile layout so edits are reflected instantly.
+
+BUILD_DIR=".site-dev"
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR/docs"
+
+# Symlink to match Dockerfile COPY layout
+for f in site/*; do
+    ln -sf "$ROOT/$f" "$BUILD_DIR/$(basename "$f")"
+done
+ln -sf "$ROOT/README.md" "$BUILD_DIR/README.md"
+ln -sf "$ROOT/SPEC.md" "$BUILD_DIR/SPEC.md"
+ln -sf "$ROOT/script/install" "$BUILD_DIR/install"
+for f in docs/*; do
+    ln -sf "$ROOT/$f" "$BUILD_DIR/docs/$(basename "$f")"
+done
+
+echo "Serving at http://localhost:8080"
+
+if command -v npx >/dev/null 2>&1; then
+    exec npx --yes live-server "$BUILD_DIR" --port=8080 --no-browser
+elif command -v python3 >/dev/null 2>&1; then
+    echo "(no live-reload — install Node.js for auto-refresh)"
+    exec python3 -m http.server 8080 -d "$BUILD_DIR"
+else
+    echo "Error: npx or python3 required" >&2
+    exit 1
+fi

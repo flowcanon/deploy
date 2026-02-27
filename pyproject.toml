@@ -3,7 +3,7 @@ name = "flow-deploy"
 version = "0.1.2"
 description = "Rolling deploys for Docker Compose + Traefik stacks"
 authors = ["Flowcanon"]
-readme = "SPEC.md"
+readme = "README.md"
 packages = [{include = "flow_deploy", from = "src"}]
 
 [tool.poetry.dependencies]
