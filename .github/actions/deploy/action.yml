@@ -20,6 +20,9 @@ inputs:
   ssh-port:
     description: Override SSH port (e.g. from vars.SSH_PORT)
     default: ""
+  registry-token:
+    description: Token for GHCR authentication on deploy host
+    default: ""
 
 runs:
   using: composite
@@ -46,6 +49,7 @@ runs:
         DEPLOY_TAG: ${{ inputs.tag }}
         HOSTS_JSON: ${{ steps.discover.outputs.hosts }}
         SSH_PORT: ${{ inputs.ssh-port }}
+        REGISTRY_TOKEN: ${{ inputs.registry-token }}
       run: |
         port_args=()
         if [ -n "$SSH_PORT" ]; then
@@ -58,7 +62,13 @@ runs:
           dir=$(echo "$group" | jq -r '.dir')
 
           echo "::group::Deploy to $user@$host:$dir"
+
+          if [ -n "$REGISTRY_TOKEN" ]; then
+            echo "$REGISTRY_TOKEN" | ssh -o StrictHostKeyChecking=no "${port_args[@]}" "$user@$host" \
+              "docker login ghcr.io -u ${{ github.actor }} --password-stdin"
+          fi
+
           ssh -o StrictHostKeyChecking=no "${port_args[@]}" "$user@$host" \
-            "cd $dir && DEPLOY_TAG=$DEPLOY_TAG flow-deploy deploy"
+            "cd $dir && flow-deploy deploy --tag $DEPLOY_TAG"
           echo "::endgroup::"
         done
