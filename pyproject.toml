@@ -41,4 +41,11 @@ line_length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short --cov=flow_deploy --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["flow_deploy"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
