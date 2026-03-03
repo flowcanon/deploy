@@ -1,5 +1,11 @@
 # Changelog
 
+### [0.2.3](https://github.com/flowcanon/deploy/compare/v0.2.2...v0.2.3) (2026-03-03)
+
+- Stub changelog into docs site [#16](https://github.com/flowcanon/deploy/pull/16)
+- Switch to release pipeline action [#14](https://github.com/flowcanon/deploy/pull/14)
+
+
 ### [0.2.2](https://github.com/flowcanon/deploy/compare/v0.2.1...v0.2.2) (2026-03-03)
 
 - Make upgrade smarter & use it as a part of github action [#12](https://github.com/flowcanon/deploy/pull/12)
