@@ -43,12 +43,37 @@ def _download(url: str, dest: str) -> None:
         raise RuntimeError("curl or wget required")
 
 
+def _latest_version() -> str | None:
+    """Fetch the latest release tag from GitHub."""
+    import json
+
+    url = f"https://api.github.com/repos/{REPO}/releases/latest"
+    try:
+        fd, tmp = tempfile.mkstemp()
+        os.close(fd)
+        _download(url, tmp)
+        with open(tmp) as f:
+            data = json.load(f)
+        os.unlink(tmp)
+        tag = data.get("tag_name", "")
+        return tag.lstrip("v") if tag else None
+    except Exception:
+        return None
+
+
 def upgrade() -> int:
     """Download and replace the current binary with the latest release.
 
-    Returns 0 on success, 1 on failure.
+    Returns 0 on success, 1 on failure. Skips if already up to date.
     """
     from flow_deploy import __version__, log
+
+    log.info(f"Current version: {__version__}")
+
+    latest = _latest_version()
+    if latest and latest == __version__:
+        log.success(f"Already up to date ({__version__}).")
+        return 0
 
     libc = _detect_libc()
     url = f"https://github.com/{REPO}/releases/latest/download/flow-deploy-linux-{libc}"
@@ -59,7 +84,8 @@ def upgrade() -> int:
         log.error(str(e))
         return 1
 
-    log.info(f"Current version: {__version__}")
+    if latest:
+        log.info(f"Latest version: {latest}")
     log.info(f"Binary: {current_path}")
     log.info(f"Detected libc: {libc}")
     log.info(f"Downloading latest from {url}...")

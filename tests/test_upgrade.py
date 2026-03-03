@@ -83,15 +83,36 @@ def test_download_no_tools():
 
 
 @patch("flow_deploy.upgrade._download")
+def test_latest_version(mock_dl, tmp_path):
+    """Parses version from GitHub API response."""
+    import json
+
+    def write_response(url, dest):
+        with open(dest, "w") as f:
+            json.dump({"tag_name": "v1.2.3"}, f)
+
+    mock_dl.side_effect = write_response
+    assert upgrade._latest_version() == "1.2.3"
+
+
+@patch("flow_deploy.upgrade._download", side_effect=RuntimeError("network"))
+def test_latest_version_failure(mock_dl):
+    """Returns None when API request fails."""
+    assert upgrade._latest_version() is None
+
+
+@patch("flow_deploy.upgrade._latest_version")
+@patch("flow_deploy.upgrade._download")
 @patch("flow_deploy.upgrade._binary_path")
 @patch("flow_deploy.upgrade._detect_libc")
-def test_upgrade_success(mock_libc, mock_path, mock_dl, tmp_path):
+def test_upgrade_success(mock_libc, mock_path, mock_dl, mock_latest, tmp_path):
     """Full upgrade succeeds: downloads, replaces binary."""
     binary = tmp_path / "flow-deploy"
     binary.write_text("old")
     mock_libc.return_value = "glibc"
     mock_path.return_value = str(binary)
     mock_dl.side_effect = lambda url, dest: open(dest, "w").write("new")
+    mock_latest.return_value = "99.99.99"
 
     result = upgrade.upgrade()
 
@@ -100,15 +121,29 @@ def test_upgrade_success(mock_libc, mock_path, mock_dl, tmp_path):
     assert "latest/download/flow-deploy-linux-glibc" in mock_dl.call_args[0][0]
 
 
+@patch("flow_deploy.upgrade._latest_version")
+def test_upgrade_already_current(mock_latest):
+    """Upgrade is a no-op when already at the latest version."""
+    from flow_deploy import __version__
+
+    mock_latest.return_value = __version__
+
+    result = upgrade.upgrade()
+
+    assert result == 0
+
+
+@patch("flow_deploy.upgrade._latest_version")
 @patch("flow_deploy.upgrade._download", side_effect=RuntimeError("network error"))
 @patch("flow_deploy.upgrade._binary_path")
 @patch("flow_deploy.upgrade._detect_libc")
-def test_upgrade_download_failure(mock_libc, mock_path, mock_dl, tmp_path):
+def test_upgrade_download_failure(mock_libc, mock_path, mock_dl, mock_latest, tmp_path):
     """Upgrade returns 1 on download failure and cleans up temp file."""
     binary = tmp_path / "flow-deploy"
     binary.write_text("old")
     mock_libc.return_value = "glibc"
     mock_path.return_value = str(binary)
+    mock_latest.return_value = "99.99.99"
 
     result = upgrade.upgrade()
 
@@ -116,17 +151,19 @@ def test_upgrade_download_failure(mock_libc, mock_path, mock_dl, tmp_path):
     assert binary.read_text() == "old"  # original untouched
 
 
+@patch("flow_deploy.upgrade._latest_version", return_value="99.99.99")
 @patch("flow_deploy.upgrade._binary_path", side_effect=RuntimeError("not found"))
-def test_upgrade_no_binary(mock_path):
+def test_upgrade_no_binary(mock_path, mock_latest):
     """Upgrade returns 1 when binary path cannot be determined."""
     result = upgrade.upgrade()
     assert result == 1
 
 
+@patch("flow_deploy.upgrade._latest_version")
 @patch("flow_deploy.upgrade._download")
 @patch("flow_deploy.upgrade._binary_path")
 @patch("flow_deploy.upgrade._detect_libc")
-def test_upgrade_cli(mock_libc, mock_path, mock_dl, tmp_path):
+def test_upgrade_cli(mock_libc, mock_path, mock_dl, mock_latest, tmp_path):
     """Upgrade command via CLI."""
     from click.testing import CliRunner
 
@@ -137,6 +174,7 @@ def test_upgrade_cli(mock_libc, mock_path, mock_dl, tmp_path):
     mock_libc.return_value = "glibc"
     mock_path.return_value = str(binary)
     mock_dl.side_effect = lambda url, dest: open(dest, "w").write("new")
+    mock_latest.return_value = "99.99.99"
 
     runner = CliRunner()
     result = runner.invoke(main, ["upgrade"])
