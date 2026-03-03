@@ -1,10 +1,8 @@
-"""Tests for discover_hosts — host grouping and env-var overrides."""
+"""Tests for flow_deploy.discovery — host grouping and env-var overrides."""
 
-import sys
+import pytest
 
-sys.path.insert(0, ".github/actions/deploy")
-
-from discover_hosts import _env_overrides, discover_hosts  # noqa: E402
+from flow_deploy.discovery import discover_hosts, env_overrides
 
 
 def _compose(x_deploy=None, **services):
@@ -103,19 +101,25 @@ def test_no_overrides_passes_through():
     assert groups[0]["user"] == "deploy"
 
 
+def test_missing_host_raises():
+    d = _compose(web=_app_svc())
+    with pytest.raises(ValueError, match="missing deploy host"):
+        discover_hosts(d)
+
+
 def test_env_overrides_reads_env(monkeypatch):
     monkeypatch.setenv("HOST_NAME", "env-host")
     monkeypatch.setenv("HOST_USER", "env-user")
-    assert _env_overrides() == {"host": "env-host", "user": "env-user"}
+    assert env_overrides() == {"host": "env-host", "user": "env-user"}
 
 
 def test_env_overrides_empty(monkeypatch):
     monkeypatch.delenv("HOST_NAME", raising=False)
     monkeypatch.delenv("HOST_USER", raising=False)
-    assert _env_overrides() == {}
+    assert env_overrides() == {}
 
 
 def test_env_overrides_partial(monkeypatch):
     monkeypatch.setenv("HOST_NAME", "env-host")
     monkeypatch.delenv("HOST_USER", raising=False)
-    assert _env_overrides() == {"host": "env-host"}
+    assert env_overrides() == {"host": "env-host"}

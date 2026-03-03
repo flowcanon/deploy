@@ -123,6 +123,57 @@ def test_logs_basic(mock_resolve, mock_streaming):
     mock_streaming.assert_called_once_with(["docker", "compose", "logs", "web"])
 
 
+@patch("flow_deploy.discovery.discover_hosts")
+@patch("flow_deploy.discovery.env_overrides")
+@patch("flow_deploy.compose.compose_config")
+def test_config_happy_path(mock_config, mock_env, mock_discover):
+    mock_config.return_value = {"services": {}}
+    mock_env.return_value = {}
+    mock_discover.return_value = [
+        {"host": "h1", "user": "deploy", "dir": "/srv", "services": ["web"]}
+    ]
+    runner = CliRunner()
+    result = runner.invoke(main, ["config"])
+    assert result.exit_code == 0
+    import json
+
+    data = json.loads(result.output)
+    assert data[0]["host"] == "h1"
+
+
+@patch("flow_deploy.compose.compose_config")
+def test_config_compose_failure(mock_config):
+    mock_config.side_effect = RuntimeError("compose config failed: bad")
+    runner = CliRunner()
+    result = runner.invoke(main, ["config"])
+    assert result.exit_code == 1
+
+
+@patch("flow_deploy.discovery.discover_hosts")
+@patch("flow_deploy.discovery.env_overrides")
+@patch("flow_deploy.compose.compose_config")
+def test_config_missing_host(mock_config, mock_env, mock_discover):
+    mock_config.return_value = {"services": {}}
+    mock_env.return_value = {}
+    mock_discover.side_effect = ValueError("services missing deploy host: web")
+    runner = CliRunner()
+    result = runner.invoke(main, ["config"])
+    assert result.exit_code == 1
+
+
+@patch("flow_deploy.discovery.discover_hosts")
+@patch("flow_deploy.discovery.env_overrides")
+@patch("flow_deploy.compose.compose_config")
+def test_config_with_command(mock_config, mock_env, mock_discover):
+    mock_config.return_value = {"services": {}}
+    mock_env.return_value = {}
+    mock_discover.return_value = []
+    runner = CliRunner()
+    result = runner.invoke(main, ["config", "--command", "docker compose"])
+    assert result.exit_code == 0
+    mock_config.assert_called_once_with(cmd=["docker", "compose"])
+
+
 def test_help():
     runner = CliRunner()
     result = runner.invoke(main, ["--help"])
@@ -133,3 +184,4 @@ def test_help():
     assert "exec" in result.output
     assert "logs" in result.output
     assert "upgrade" in result.output
+    assert "config" in result.output
