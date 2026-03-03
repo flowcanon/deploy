@@ -1,12 +1,13 @@
 """Click entry point — all commands."""
 
+import json
 import sys
 
 import click
 
 from flow_deploy import __version__, compose
 from flow_deploy import deploy as deploy_mod
-from flow_deploy import log, process, tags
+from flow_deploy import discovery, log, process, tags
 
 
 @click.group()
@@ -93,6 +94,27 @@ def logs(service, follow, tail):
     args.append(service)
     code = process.run_streaming(compose_cmd + args)
     sys.exit(code)
+
+
+@main.command()
+@click.option("--command", default=None, help="Compose command override (e.g. 'docker compose')")
+def config(command):
+    """Show resolved deploy configuration as JSON."""
+    cmd = command.split() if command else None
+    try:
+        compose_dict = compose.compose_config(cmd=cmd)
+    except RuntimeError as e:
+        log.error(str(e))
+        sys.exit(1)
+
+    try:
+        overrides = discovery.env_overrides()
+        hosts = discovery.discover_hosts(compose_dict, overrides)
+    except ValueError as e:
+        log.error(str(e))
+        sys.exit(1)
+
+    click.echo(json.dumps(hosts))
 
 
 @main.command()
