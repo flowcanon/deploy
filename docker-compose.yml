@@ -22,7 +22,6 @@ services:
       - traefik.http.routers.flow-deploy-docs.entrypoints=web,websecure
       - traefik.http.routers.flow-deploy-docs.middlewares=compression,securityheaders
       - traefik.http.routers.flow-deploy-docs.rule=Host(`${DOMAIN}`)
-      - traefik.http.routers.flow-deploy-docs.tls.certresolver=letsencrypt
       - traefik.http.routers.flow-deploy-docs.tls=${TLS_ENABLED:-false}
       - traefik.http.services.flow-deploy-docs.loadbalancer.server.port=80
     restart: unless-stopped
