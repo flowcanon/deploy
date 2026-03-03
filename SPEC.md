@@ -316,7 +316,21 @@ Tail logs for a service. Convenience wrapper around `docker compose logs`.
 flow-deploy logs <service> [--follow] [--tail N]
 ```
 
-### 4.6 `flow-deploy upgrade`
+### 4.6 `flow-deploy config`
+
+Output resolved deploy configuration as JSON. Used by the GitHub Action to discover hosts without requiring the Python source tree.
+
+```
+flow-deploy config [--command COMMAND]
+```
+
+| Flag | Description |
+|---|---|
+| `--command COMMAND` | Override compose command (e.g. `docker compose`) |
+
+Reads `COMPOSE_COMMAND` env var (same as all other commands), runs `<compose-command> config`, parses host discovery, and emits a JSON array of host groups to stdout. Errors go to stderr with exit code 1.
+
+### 4.7 `flow-deploy upgrade`
 
 Update the tool to the latest release.
 
@@ -456,7 +470,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: flowcanon/deploy/.github/actions/deploy@master
+      - uses: flowcanon/deploy-action@master
         with:
           tag: ${{ needs.build.outputs.tag }}
           ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -468,7 +482,7 @@ The `command` input tells the action which compose wrapper to use for config par
 For staging, swap the wrapper:
 
 ```yaml
-      - uses: flowcanon/deploy/.github/actions/deploy@master
+      - uses: flowcanon/deploy-action@master
         with:
           tag: ${{ needs.build.outputs.tag }}
           ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}

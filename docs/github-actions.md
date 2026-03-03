@@ -92,7 +92,7 @@ Your workflow needs `environment: your-environment-name` on the deploy job to ac
 
 ## The Deploy Action
 
-Copy `.github/actions/deploy/` from this repo into your project, or reference it directly.
+Use the standalone action from [`flowcanon/deploy-action`](https://github.com/flowcanon/deploy-action).
 
 ### Inputs
 
@@ -147,7 +147,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
 
-      - uses: ./.github/actions/deploy
+      - uses: flowcanon/deploy-action@master
         with:
           tag: ${{ steps.meta.outputs.version }}
           ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
