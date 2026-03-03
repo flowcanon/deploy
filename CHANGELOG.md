@@ -1,5 +1,10 @@
 # Changelog
 
+### [0.2.2](https://github.com/flowcanon/deploy/compare/v0.2.1...v0.2.2) (2026-03-03)
+
+- Make upgrade smarter & use it as a part of github action [#12](https://github.com/flowcanon/deploy/pull/12)
+
+
 ### [0.2.1](https://github.com/flowcanon/deploy/compare/v0.2.0...v0.2.1) (2026-03-03)
 
 - Release self-contained github action at flowcanon/deploy-action & absorb required discovery command into flow-deploy config [#8](https://github.com/flowcanon/deploy/pull/8)
