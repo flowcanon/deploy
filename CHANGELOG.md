@@ -1,5 +1,10 @@
 # Changelog
 
+### [0.2.4](https://github.com/flowcanon/deploy/compare/v0.2.3...v0.2.4) (2026-03-05)
+
+- Add plausible anlaytics [#17](https://github.com/flowcanon/deploy/pull/17)
+
+
 ### [0.2.3](https://github.com/flowcanon/deploy/compare/v0.2.2...v0.2.3) (2026-03-03)
 
 - Stub changelog into docs site [#16](https://github.com/flowcanon/deploy/pull/16)
