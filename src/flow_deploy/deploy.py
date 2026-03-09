@@ -3,7 +3,7 @@
 import signal
 import time
 
-from flow_deploy import compose, config, containers, lock, log, tags
+from flow_deploy import compose, config, containers, git, lock, log, tags
 
 
 def deploy(
@@ -12,7 +12,7 @@ def deploy(
     dry_run: bool = False,
     cmd: list[str] | None = None,
 ) -> int:
-    """Perform a rolling deploy. Returns exit code (0=success, 1=failure, 2=locked)."""
+    """Perform a rolling deploy. Returns exit code (0=success, 1=failure, 2=locked, 3=skipped)."""
     compose_cmd = cmd or compose.resolve_command()
 
     # Parse compose config
@@ -47,11 +47,18 @@ def deploy(
         _dry_run(tag, app_services)
         return 0
 
+    # Git pre-flight: dirty check, fetch, checkout detached
+    git_code, previous_sha = git.preflight_and_checkout(tag)
+    if git_code != 0:
+        return 1
+
     # Acquire lock
     if not lock.acquire():
         lock_info = lock.read_lock()
         pid = lock_info["pid"] if lock_info else "unknown"
         log.error(f"Deploy lock held by PID {pid}")
+        # Restore repo to previous state before exiting
+        git.restore(previous_sha)
         return 2
 
     # Register signal handlers for cleanup
@@ -80,6 +87,7 @@ def deploy(
             result = _deploy_service(svc, tag, compose_cmd, project=project)
             if result != 0:
                 log.info("")
+                git.restore(previous_sha)
                 log.footer("FAILED (deploy aborted)")
                 lock.release()
                 return 1
@@ -88,6 +96,7 @@ def deploy(
         tags.write_tag(tag)
 
         log.info("")
+        log.info(f"HEAD detached at {tag}")
         log.footer(f"complete ({elapsed:.1f}s)")
     finally:
         lock.release()
