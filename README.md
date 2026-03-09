@@ -97,6 +97,7 @@ For CI/CD orchestration across multiple hosts, declare topology in your compose 
 x-deploy:
   host: app-1.example.com
   user: deploy
+  port: 22
   dir: /srv/myapp
 
 services:
