@@ -107,19 +107,65 @@ def test_missing_host_raises():
         discover_hosts(d)
 
 
+def test_port_from_x_deploy():
+    d = _compose(
+        x_deploy={"host": "h1", "user": "deploy", "port": 2222, "dir": "/srv/app"},
+        web=_app_svc(),
+    )
+    groups = discover_hosts(d)
+    assert groups[0]["port"] == 2222
+
+
+def test_port_omitted_when_none():
+    d = _compose(
+        x_deploy={"host": "h1", "user": "deploy", "dir": "/srv/app"},
+        web=_app_svc(),
+    )
+    groups = discover_hosts(d)
+    assert "port" not in groups[0]
+
+
+def test_override_port():
+    d = _compose(
+        x_deploy={"host": "h1", "user": "deploy", "dir": "/srv/app"},
+        web=_app_svc(),
+    )
+    groups = discover_hosts(d, overrides={"port": "2222"})
+    assert groups[0]["port"] == 2222
+
+
+def test_override_port_replaces_x_deploy():
+    d = _compose(
+        x_deploy={"host": "h1", "user": "deploy", "port": 22, "dir": "/srv/app"},
+        web=_app_svc(),
+    )
+    groups = discover_hosts(d, overrides={"port": "2222"})
+    assert groups[0]["port"] == 2222
+
+
 def test_env_overrides_reads_env(monkeypatch):
     monkeypatch.setenv("HOST_NAME", "env-host")
     monkeypatch.setenv("HOST_USER", "env-user")
+    monkeypatch.delenv("SSH_PORT", raising=False)
     assert env_overrides() == {"host": "env-host", "user": "env-user"}
 
 
 def test_env_overrides_empty(monkeypatch):
     monkeypatch.delenv("HOST_NAME", raising=False)
     monkeypatch.delenv("HOST_USER", raising=False)
+    monkeypatch.delenv("SSH_PORT", raising=False)
     assert env_overrides() == {}
 
 
 def test_env_overrides_partial(monkeypatch):
     monkeypatch.setenv("HOST_NAME", "env-host")
     monkeypatch.delenv("HOST_USER", raising=False)
+    monkeypatch.delenv("SSH_PORT", raising=False)
     assert env_overrides() == {"host": "env-host"}
+
+
+def test_env_overrides_with_port(monkeypatch):
+    monkeypatch.setenv("HOST_NAME", "env-host")
+    monkeypatch.setenv("HOST_USER", "env-user")
+    monkeypatch.setenv("SSH_PORT", "2222")
+    assert env_overrides() == {"host": "env-host", "user": "env-user", "port": "2222"}

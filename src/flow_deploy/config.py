@@ -16,6 +16,7 @@ class ServiceConfig:
     file_order: int
     host: str | None = None
     user: str | None = None
+    port: int | None = None
     dir: str | None = None
 
     @property
@@ -65,6 +66,8 @@ def parse_services(compose_dict: dict) -> list[ServiceConfig]:
         # Host discovery: per-service label → x-deploy default → None
         host = _get_label(labels, "deploy.host") or x_deploy.get("host")
         user = _get_label(labels, "deploy.user") or x_deploy.get("user")
+        raw_port = _get_label(labels, "deploy.port") or x_deploy.get("port")
+        port = int(raw_port) if raw_port is not None else None
         svc_dir = _get_label(labels, "deploy.dir") or x_deploy.get("dir")
 
         configs.append(
@@ -80,6 +83,7 @@ def parse_services(compose_dict: dict) -> list[ServiceConfig]:
                 file_order=idx,
                 host=host,
                 user=user,
+                port=port,
                 dir=svc_dir,
             )
         )
