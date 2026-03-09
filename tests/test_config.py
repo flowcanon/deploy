@@ -261,6 +261,51 @@ def test_per_service_labels_override_x_deploy():
     assert worker.dir == "/srv/worker"
 
 
+def test_x_deploy_port():
+    d = {
+        "x-deploy": {"host": "app-1.example.com", "user": "deploy", "port": 2222},
+        "services": {
+            "web": {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        },
+    }
+    svc = parse_services(d)[0]
+    assert svc.port == 2222
+
+
+def test_per_service_port_label_overrides_x_deploy():
+    d = {
+        "x-deploy": {"host": "app-1.example.com", "user": "deploy", "port": 22},
+        "services": {
+            "web": {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app", "deploy.port": "2222"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        },
+    }
+    svc = parse_services(d)[0]
+    assert svc.port == 2222
+
+
+def test_port_default_is_none():
+    d = _compose_dict(
+        (
+            "web",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        ),
+    )
+    svc = parse_services(d)[0]
+    assert svc.port is None
+
+
 def test_no_x_deploy_no_labels():
     d = _compose_dict(
         (
