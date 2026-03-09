@@ -91,6 +91,7 @@ Host information is declared in the compose file using Docker Compose's native `
 x-deploy:
   host: app-1.example.com
   user: deploy
+  port: 22
   dir: /srv/myapp
 
 services:
@@ -114,7 +115,7 @@ services:
       deploy.role: accessory
 ```
 
-All services inherit `host`, `user`, and `dir` from `x-deploy`. One declaration, no repetition.
+All services inherit `host`, `user`, `port`, and `dir` from `x-deploy`. One declaration, no repetition.
 
 **Multi-host:** Per-service labels override the defaults:
 
@@ -155,12 +156,13 @@ services:
 |---|---|---|
 | `deploy.host` | `x-deploy.host` | SSH hostname for this service |
 | `deploy.user` | `x-deploy.user` | SSH user for this service |
+| `deploy.port` | `x-deploy.port` | SSH port for this service |
 | `deploy.dir` | `x-deploy.dir` | Project directory on the remote host |
 
 **Resolution order** (highest priority wins):
 
 1. GitHub Actions environment variable (`HOST_NAME`, `HOST_USER`, `SSH_PORT`)
-2. Per-service label (`deploy.host`, `deploy.user`, `deploy.dir`)
+2. Per-service label (`deploy.host`, `deploy.user`, `deploy.port`, `deploy.dir`)
 3. Top-level `x-deploy` default
 4. Error if none is set (for `host`)
 
@@ -170,7 +172,7 @@ Environment variable overrides exist because `x-deploy` values are committed to 
 |---|---|---|
 | `HOST_NAME` | `x-deploy.host` / `deploy.host` | SSH hostname for all services |
 | `HOST_USER` | `x-deploy.user` / `deploy.user` | SSH user for all services |
-| `SSH_PORT` | *(default 22)* | SSH port for all connections |
+| `SSH_PORT` | `deploy.port` / `x-deploy.port` | SSH port for all connections |
 
 The GitHub Action (§7) reads these values by running `<compose-command> config` in CI, which outputs the fully merged YAML with all overrides applied. It then groups services by host, applies any environment variable overrides, and SSHes to each one.
 
@@ -579,6 +581,7 @@ The tool has zero configuration files. All behavior is controlled by `x-deploy` 
 |---|---|---|
 | `x-deploy.host` | No* | Default SSH hostname |
 | `x-deploy.user` | No* | Default SSH user |
+| `x-deploy.port` | No | Default SSH port |
 | `x-deploy.dir` | No | Default project directory on remote host |
 
 \* Required unless overridden by an environment variable or per-service label.
@@ -590,6 +593,7 @@ The tool has zero configuration files. All behavior is controlled by `x-deploy` 
 | `deploy.role` | Yes | *(none)* | `app` or `accessory` |
 | `deploy.host` | No | `x-deploy.host` | SSH hostname for this service |
 | `deploy.user` | No | `x-deploy.user` | SSH user for this service |
+| `deploy.port` | No | `x-deploy.port` | SSH port for this service |
 | `deploy.dir` | No | `x-deploy.dir` | Project directory on remote host |
 | `deploy.order` | No | `100` | Deploy order (lower first) |
 | `deploy.drain` | No | `30` | Seconds to wait after SIGTERM before SIGKILL |
@@ -602,7 +606,7 @@ The tool has zero configuration files. All behavior is controlled by `x-deploy` 
 |---|---|---|
 | `HOST_NAME` | `deploy.host` / `x-deploy.host` | SSH hostname for all services |
 | `HOST_USER` | `deploy.user` / `x-deploy.user` | SSH user for all services |
-| `SSH_PORT` | *(default 22)* | SSH port for all connections |
+| `SSH_PORT` | `deploy.port` / `x-deploy.port` | SSH port for all connections |
 
 These are useful for public repositories where hostnames and usernames should not be committed to version control.
 

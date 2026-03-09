@@ -162,7 +162,7 @@ jobs:
 For each host group discovered from your compose config:
 
 1. **SSH agent** — loads your deploy key
-2. **Discover hosts** — parses `docker-compose.yml` for `x-deploy` and `deploy.*` labels, groups services by `(host, user, dir)`
+2. **Discover hosts** — parses `docker-compose.yml` for `x-deploy` and `deploy.*` labels, groups services by `(host, user, port, dir)`
 3. **GHCR login** — authenticates Docker on the server (and logs out after)
 4. **Git pull** — fast-forward only, fails safely if the server has diverged
 5. **Deploy** — runs `flow-deploy deploy --tag <tag>` on the server
@@ -175,13 +175,14 @@ The action discovers where to deploy from your compose file:
 x-deploy:
   host: app-1.example.com
   user: deploy
+  port: 22
   dir: /srv/myapp
 ```
 
 **Priority order** (highest wins):
 
-1. GitHub Actions variables (`vars.HOST_NAME`, `vars.HOST_USER`)
-2. Per-service labels (`deploy.host`, `deploy.user`, `deploy.dir`)
+1. GitHub Actions variables (`vars.HOST_NAME`, `vars.HOST_USER`, `vars.SSH_PORT`)
+2. Per-service labels (`deploy.host`, `deploy.user`, `deploy.port`, `deploy.dir`)
 3. `x-deploy` top-level defaults
 
 This means you can keep `x-deploy` in your compose file for local/development use and override with GitHub variables for production — keeping real hostnames out of version control.
@@ -208,7 +209,7 @@ services:
       deploy.dir: /srv/worker
 ```
 
-The action groups services by `(host, user, dir)` and deploys to each group sequentially.
+The action groups services by `(host, user, port, dir)` and deploys to each group sequentially.
 
 ## Versioned Releases
 
