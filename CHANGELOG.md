@@ -1,5 +1,10 @@
 # Changelog
 
+### [0.2.6](https://github.com/flowcanon/deploy/compare/v0.2.5...v0.2.6) (2026-03-09)
+
+- (Bugfix) Filter containers by project [#21](https://github.com/flowcanon/deploy/pull/21)
+
+
 ### [0.2.5](https://github.com/flowcanon/deploy/compare/v0.2.4...v0.2.5) (2026-03-09)
 
 - Support ssh port in docker compose as well [#19](https://github.com/flowcanon/deploy/pull/19)
