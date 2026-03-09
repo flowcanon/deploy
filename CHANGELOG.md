@@ -1,5 +1,10 @@
 # Changelog
 
+### [0.2.7](https://github.com/flowcanon/deploy/compare/v0.2.6...v0.2.7) (2026-03-09)
+
+- Self-contains the  command which manages git actions [#23](https://github.com/flowcanon/deploy/pull/23)
+
+
 ### [0.2.6](https://github.com/flowcanon/deploy/compare/v0.2.5...v0.2.6) (2026-03-09)
 
 - (Bugfix) Filter containers by project [#21](https://github.com/flowcanon/deploy/pull/21)
