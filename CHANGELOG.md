@@ -1,5 +1,10 @@
 # Changelog
 
+### [0.2.5](https://github.com/flowcanon/deploy/compare/v0.2.4...v0.2.5) (2026-03-09)
+
+- Support ssh port in docker compose as well [#19](https://github.com/flowcanon/deploy/pull/19)
+
+
 ### [0.2.4](https://github.com/flowcanon/deploy/compare/v0.2.3...v0.2.4) (2026-03-05)
 
 - Add plausible anlaytics [#17](https://github.com/flowcanon/deploy/pull/17)
