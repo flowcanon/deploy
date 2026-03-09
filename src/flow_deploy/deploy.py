@@ -73,10 +73,11 @@ def deploy(
         log.info(f"services: {service_names}")
         log.info("")
 
+        project = compose_dict.get("name", "")
         start_time = time.time()
 
         for svc in app_services:
-            result = _deploy_service(svc, tag, compose_cmd)
+            result = _deploy_service(svc, tag, compose_cmd, project=project)
             if result != 0:
                 log.info("")
                 log.footer("FAILED (deploy aborted)")
@@ -96,7 +97,9 @@ def deploy(
     return 0
 
 
-def _deploy_service(svc: config.ServiceConfig, tag: str, compose_cmd: list[str]) -> int:
+def _deploy_service(
+    svc: config.ServiceConfig, tag: str, compose_cmd: list[str], project: str = ""
+) -> int:
     """Deploy a single service. Returns 0 on success, 1 on failure."""
     log.service_start(svc.name)
     svc_start = time.time()
@@ -127,9 +130,14 @@ def _deploy_service(svc: config.ServiceConfig, tag: str, compose_cmd: list[str])
         return 1
 
     # 3. Get containers, identify old vs new
-    ctrs = containers.get_containers_for_service(svc.name)
+    ctrs = containers.get_containers_for_service(svc.name, project=project)
     if len(ctrs) != 2:
-        log.failure(f"Expected 2 containers, found {len(ctrs)}")
+        ctr_details = ", ".join(f"{c.get('ID', '?')[:12]} ({c.get('Image', '?')})" for c in ctrs)
+        log.failure(f"Expected 2 containers for {svc.name}, found {len(ctrs)}: [{ctr_details}]")
+        log.step(
+            f"Run `docker ps --filter label=com.docker.compose.service={svc.name}` "
+            "to inspect running containers, then remove extras and retry."
+        )
         _scale_back(svc.name, env, compose_cmd)
         log.service_end()
         return 1
