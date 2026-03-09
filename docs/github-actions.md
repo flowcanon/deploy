@@ -8,7 +8,7 @@ The deploy pipeline:
 
 1. CI builds your Docker image and pushes to GHCR
 2. The deploy action discovers hosts from your `docker-compose.yml`
-3. For each host: authenticates with GHCR, pulls the repo, and runs `flow-deploy deploy`
+3. For each host: authenticates with GHCR and runs `flow-deploy deploy` (which handles git fetch and checkout internally)
 
 ## Prerequisites
 
@@ -16,7 +16,7 @@ On your deploy server:
 
 - Docker and Docker Compose
 - Traefik (or your reverse proxy) running
-- Git (the server repo is updated via `git pull --ff-only` before each deploy)
+- Git (`flow-deploy` handles `git fetch` and detached checkout internally during each deploy)
 - `flow-deploy` installed:
 
 ```sh
@@ -164,8 +164,7 @@ For each host group discovered from your compose config:
 1. **SSH agent** — loads your deploy key
 2. **Discover hosts** — parses `docker-compose.yml` for `x-deploy` and `deploy.*` labels, groups services by `(host, user, port, dir)`
 3. **GHCR login** — authenticates Docker on the server (and logs out after)
-4. **Git pull** — fast-forward only, fails safely if the server has diverged
-5. **Deploy** — runs `flow-deploy deploy --tag <tag>` on the server
+4. **Deploy** — runs `flow-deploy deploy --tag <tag>` on the server (git fetch and detached checkout are handled by the tool)
 
 ## Host Discovery
 
@@ -221,8 +220,8 @@ To cut releases with binaries and changelogs, see the release workflow in this r
 
 ## Troubleshooting
 
-**`git pull --ff-only` fails:**
-The server repo has diverged from the remote. SSH into the server and resolve manually — check for local commits or uncommitted changes.
+**`working tree is dirty — deploy aborted`:**
+The server repo has uncommitted changes. SSH into the server and resolve manually — `git status` will show what's dirty.
 
 **`unauthorized` pulling from GHCR:**
 Pass `registry-token: ${{ secrets.GITHUB_TOKEN }}` to the deploy action. The job needs `packages: write` (or at least `packages: read`) permission.

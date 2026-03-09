@@ -6,6 +6,7 @@ from flow_deploy import process
 from flow_deploy.deploy import deploy, rollback
 
 COMPOSE_CMD = ["docker", "compose"]
+PREV_SHA = "prev123abc"
 
 COMPOSE_CONFIG_YAML = """\
 services:
@@ -70,6 +71,16 @@ def _err(stderr="error"):
     return process.Result(1, "", stderr)
 
 
+def _git_preflight():
+    """Return the 4 mock responses for a clean git preflight."""
+    return [
+        _ok(""),  # git status --porcelain (clean)
+        _ok(),  # git fetch origin
+        _ok(PREV_SHA + "\n"),  # git rev-parse HEAD
+        _ok(),  # git checkout --detach <sha>
+    ]
+
+
 def _setup_happy_path(mock_process, monkeypatch, tmp_path):
     """Set up mock responses for a successful 2-service deploy."""
     monkeypatch.chdir(tmp_path)
@@ -77,6 +88,8 @@ def _setup_happy_path(mock_process, monkeypatch, tmp_path):
         [
             # compose config
             _ok(COMPOSE_CONFIG_YAML),
+            # git preflight
+            *_git_preflight(),
             # web: pull
             _ok(),
             # web: scale to 2
@@ -124,6 +137,7 @@ def test_deploy_service_filter(mock_process, monkeypatch, tmp_path):
     mock_process.responses.extend(
         [
             _ok(COMPOSE_CONFIG_YAML),
+            *_git_preflight(),
             # web only: pull, scale, ps, health, stop, rm, scale back
             _ok(),
             _ok(),
@@ -158,6 +172,7 @@ def test_deploy_health_check_failure(mock_process, monkeypatch, tmp_path):
     mock_process.responses.extend(
         [
             _ok(COMPOSE_CONFIG_YAML),
+            *_git_preflight(),
             # web: pull
             _ok(),
             # web: scale to 2
@@ -170,6 +185,8 @@ def test_deploy_health_check_failure(mock_process, monkeypatch, tmp_path):
             _ok(),
             # web: scale back to 1
             _ok(),
+            # git restore to previous SHA
+            _ok(),
         ]
     )
     result = deploy(tag="abc123", cmd=COMPOSE_CMD)
@@ -181,7 +198,10 @@ def test_deploy_pull_failure(mock_process, monkeypatch, tmp_path):
     mock_process.responses.extend(
         [
             _ok(COMPOSE_CONFIG_YAML),
+            *_git_preflight(),
             _err("pull failed"),
+            # git restore to previous SHA
+            _ok(),
         ]
     )
     result = deploy(tag="abc123", cmd=COMPOSE_CMD)
@@ -190,7 +210,14 @@ def test_deploy_pull_failure(mock_process, monkeypatch, tmp_path):
 
 def test_deploy_lock_held(mock_process, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    mock_process.responses.append(_ok(COMPOSE_CONFIG_YAML))
+    mock_process.responses.extend(
+        [
+            _ok(COMPOSE_CONFIG_YAML),
+            *_git_preflight(),
+            # git restore after lock rejection
+            _ok(),
+        ]
+    )
     # Pre-acquire lock with current PID
     from flow_deploy import lock
 
@@ -245,10 +272,12 @@ services:
     mock_process.responses.extend(
         [
             _ok(single_svc_config),
+            *_git_preflight(),
             _ok(),  # pull
             _ok(),  # scale to 2
             _ok(WEB_CONTAINER_OLD + "\n"),  # only 1 container returned
             _ok(),  # scale back to 1
+            _ok(),  # git restore
         ]
     )
     result = deploy(tag="abc123", cmd=COMPOSE_CMD)
@@ -286,6 +315,7 @@ services:
     mock_process.responses.extend(
         [
             _ok(single_svc_config),
+            *_git_preflight(),
             _ok(),
             _ok(),
             _ok(WEB_CONTAINER_OLD + "\n" + WEB_CONTAINER_NEW + "\n"),
@@ -297,6 +327,21 @@ services:
     )
     result = rollback(cmd=COMPOSE_CMD)
     assert result == 0
+
+
+def test_deploy_dirty_tree_fails(mock_process, monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    mock_process.responses.extend(
+        [
+            _ok(COMPOSE_CONFIG_YAML),
+            # git status --porcelain returns dirty
+            _ok(" M somefile.py\n"),
+        ]
+    )
+    result = deploy(tag="abc123", cmd=COMPOSE_CMD)
+    assert result == 1
+    err = capsys.readouterr().err
+    assert "dirty" in err
 
 
 def test_rollback_no_previous(monkeypatch, tmp_path):

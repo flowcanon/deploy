@@ -29,7 +29,19 @@ Every service in `docker-compose.yml` is classified by a label:
 
 ### 2.2 Deploy Lifecycle
 
-For each service with `deploy.role=app`, in the order they appear in the compose file:
+The deploy runs as a single transaction — `flow-deploy deploy --tag <sha>` owns the full lifecycle including git operations. The `--tag` value serves double duty: it is both the Docker image tag and the git SHA to checkout.
+
+**Pre-flight and git checkout (before any service work):**
+
+```
+0a. Dirty check             git status --porcelain
+                             If non-empty → log "working tree is dirty — deploy aborted", exit 1
+0b. Fetch                   git fetch origin
+0c. Record previous SHA     previous_sha = git rev-parse HEAD
+0d. Checkout (detached)     git checkout --detach <sha>
+```
+
+**For each service with `deploy.role=app`, in the order they appear in the compose file:**
 
 ```
 1.  Pull new image           <compose-command> pull <service>
@@ -43,8 +55,13 @@ For each service with `deploy.role=app`, in the order they appear in the compose
 4b. If unhealthy:
       Stop new container     docker stop <new_id> && docker rm <new_id>
       Scale back to 1        <compose-command> up -d --no-deps --scale <service>=1
+      Restore repo           git checkout --detach <previous_sha>
       ✗ Abort deploy, exit 1
 ```
+
+**On success:** the server is in detached HEAD at `<sha>`. Log `HEAD detached at <sha>`.
+
+**On failure:** the repo is restored to `<previous_sha>` before exiting. The invariant is preserved: `git rev-parse HEAD` always matches the image SHA that is actively serving traffic.
 
 Where `<compose-command>` is the project's compose wrapper (see §3.1).
 
@@ -398,7 +415,14 @@ Failure output:
 [12:37:14]   rollback complete, old container still serving
 [12:37:14]   ✗ worker FAILED
 [12:37:14]
+[12:37:14]   restoring repo to a1b2c3d...
 [12:37:14] ── FAILED (deploy aborted) ─────────────
+```
+
+Dirty-tree output:
+
+```
+[12:34:56] ERROR: working tree is dirty — deploy aborted
 ```
 
 ### 6.1 GitHub Actions Integration
@@ -421,7 +445,7 @@ For multi-host deploys or when you want host discovery from compose labels, use 
 2. Runs `<command> config` to get the fully merged compose YAML
 3. Parses `x-deploy` and `deploy.*` labels to discover hosts
 4. Groups services by host
-5. SSHes to each host: `git pull` → `flow-deploy deploy --tag <tag>`
+5. SSHes to each host: `flow-deploy deploy --tag <tag>`
 6. Streams logs back to GitHub Actions
 
 ```yaml
@@ -504,11 +528,10 @@ For single-host projects, the action is optional. A raw SSH command works:
         run: |
           ssh -o StrictHostKeyChecking=no deploy@${{ secrets.PROD_HOST }} \
             "cd /srv/myapp && \
-             git fetch && git checkout -B main origin/main && \
              GITHUB_ACTIONS=true flow-deploy deploy --tag ${{ needs.build.outputs.tag }}"
 ```
 
-This is the simplest possible deploy: one SSH call, no action, no host discovery. The tool runs locally on the server, calls `script/prod`, and handles the rolling deploy.
+This is the simplest possible deploy: one SSH call, no action, no host discovery. The tool handles git operations (fetch, detached checkout), calls `script/prod`, and runs the rolling deploy. No separate `git pull` or `git checkout` is needed — the tool owns the full transaction.
 
 ---
 
