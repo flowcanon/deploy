@@ -44,32 +44,6 @@ def test_deploy_exit_code_propagated(mock_deploy):
     assert result.exit_code == 2
 
 
-@patch("flow_deploy.deploy.rollback")
-def test_rollback(mock_rollback):
-    mock_rollback.return_value = 0
-    runner = CliRunner()
-    result = runner.invoke(main, ["rollback"])
-    assert result.exit_code == 0
-    mock_rollback.assert_called_once_with(services_filter=None)
-
-
-@patch("flow_deploy.deploy.rollback")
-def test_rollback_with_service(mock_rollback):
-    mock_rollback.return_value = 0
-    runner = CliRunner()
-    result = runner.invoke(main, ["rollback", "--service", "web"])
-    assert result.exit_code == 0
-    mock_rollback.assert_called_once_with(services_filter=["web"])
-
-
-@patch("flow_deploy.deploy.rollback")
-def test_rollback_failure(mock_rollback):
-    mock_rollback.return_value = 1
-    runner = CliRunner()
-    result = runner.invoke(main, ["rollback"])
-    assert result.exit_code == 1
-
-
 def test_version():
     runner = CliRunner()
     result = runner.invoke(main, ["--version"])
@@ -179,7 +153,6 @@ def test_help():
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
     assert "deploy" in result.output
-    assert "rollback" in result.output
     assert "status" in result.output
     assert "exec" in result.output
     assert "logs" in result.output

@@ -8,7 +8,7 @@
 
 Minimal, opinionated rolling deploys for Docker Compose + Traefik stacks.
 
-Replaces Kamal's useful subset — rolling deploys, health checks, automatic rollback — without its baggage.
+Replaces Kamal's useful subset — rolling deploys, health checks, automatic failure recovery — without its baggage.
 
 ## Install
 
@@ -67,7 +67,7 @@ For each `deploy.role=app` service, in order:
 2. **Scale to 2** — start a new container alongside the old one
 3. **Health check** — poll the new container until healthy or timeout
 4. **Cutover** — if healthy, gracefully drain the old container and scale back to 1
-5. **Rollback** — if unhealthy, remove the new container. Old container is untouched.
+5. **Abort** — if unhealthy, remove the new container. Old container is untouched.
 
 ## Service Roles
 
@@ -118,7 +118,6 @@ See [GitHub Actions Setup](docs/github-actions.md) for CI/CD integration.
 
 ```
 flow-deploy deploy [--tag TAG] [--service NAME] [--dry-run]
-flow-deploy rollback [--service NAME]
 flow-deploy status
 flow-deploy exec SERVICE COMMAND...
 flow-deploy logs SERVICE [-f] [-n LINES]

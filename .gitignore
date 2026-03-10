@@ -2,6 +2,4 @@
 .env
 .omc/
 __pycache__/
-.deploy-tag
-.deploy-lock
 .site-dev/

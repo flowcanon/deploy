@@ -1,10 +1,13 @@
-""".deploy-lock acquire/release/stale recovery."""
+"""Deploy lock — acquire/release/stale recovery.
+
+Lock file lives in .git/ to avoid dirtying the working tree.
+"""
 
 import json
 import os
 import time
 
-LOCK_FILE = ".deploy-lock"
+LOCK_FILE = ".git/deploy-lock"
 
 
 def _lock_path() -> str:

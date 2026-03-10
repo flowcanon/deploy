@@ -1,9 +1,9 @@
-"""Tests for deploy.py — full deploy lifecycle, rollback, dry-run."""
+"""Tests for deploy.py — full deploy lifecycle, dry-run."""
 
 import json
 
 from flow_deploy import process
-from flow_deploy.deploy import deploy, rollback
+from flow_deploy.deploy import deploy
 
 COMPOSE_CMD = ["docker", "compose"]
 PREV_SHA = "prev123abc"
@@ -81,9 +81,15 @@ def _git_preflight():
     ]
 
 
+def _chdir(monkeypatch, tmp_path):
+    """Set working directory and ensure .git/ exists for lock file."""
+    (tmp_path / ".git").mkdir(exist_ok=True)
+    monkeypatch.chdir(tmp_path)
+
+
 def _setup_happy_path(mock_process, monkeypatch, tmp_path):
     """Set up mock responses for a successful 2-service deploy."""
-    monkeypatch.chdir(tmp_path)
+    _chdir(monkeypatch, tmp_path)
     mock_process.responses.extend(
         [
             # git preflight (before compose config)
@@ -126,14 +132,10 @@ def test_deploy_happy_path(mock_process, monkeypatch, tmp_path):
     _setup_happy_path(mock_process, monkeypatch, tmp_path)
     result = deploy(tag="abc123", cmd=COMPOSE_CMD)
     assert result == 0
-    # Verify tag was written
-    tag_file = tmp_path / ".deploy-tag"
-    assert tag_file.exists()
-    assert "abc123" in tag_file.read_text()
 
 
 def test_deploy_service_filter(mock_process, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
+    _chdir(monkeypatch, tmp_path)
     mock_process.responses.extend(
         [
             *_git_preflight(),
@@ -153,7 +155,7 @@ def test_deploy_service_filter(mock_process, monkeypatch, tmp_path):
 
 
 def test_deploy_dry_run(mock_process, monkeypatch, tmp_path, capsys):
-    monkeypatch.chdir(tmp_path)
+    _chdir(monkeypatch, tmp_path)
     mock_process.responses.append(_ok(COMPOSE_CONFIG_YAML))
     result = deploy(tag="abc123", dry_run=True, cmd=COMPOSE_CMD)
     assert result == 0
@@ -162,11 +164,11 @@ def test_deploy_dry_run(mock_process, monkeypatch, tmp_path, capsys):
     assert "web" in out
     assert "worker" in out
     # No lock file should exist
-    assert not (tmp_path / ".deploy-lock").exists()
+    assert not (tmp_path / ".git" / "deploy-lock").exists()
 
 
 def test_deploy_health_check_failure(mock_process, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
+    _chdir(monkeypatch, tmp_path)
     # Patch _wait_for_healthy to avoid real sleep
     monkeypatch.setattr("flow_deploy.deploy._wait_for_healthy", lambda *a, **kw: False)
     mock_process.responses.extend(
@@ -179,7 +181,7 @@ def test_deploy_health_check_failure(mock_process, monkeypatch, tmp_path):
             _ok(),
             # web: docker ps
             _ok(WEB_CONTAINER_OLD + "\n" + WEB_CONTAINER_NEW + "\n"),
-            # web: stop new (rollback)
+            # web: stop new (abort)
             _ok(),
             # web: rm new
             _ok(),
@@ -194,7 +196,7 @@ def test_deploy_health_check_failure(mock_process, monkeypatch, tmp_path):
 
 
 def test_deploy_pull_failure(mock_process, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
+    _chdir(monkeypatch, tmp_path)
     mock_process.responses.extend(
         [
             *_git_preflight(),
@@ -209,7 +211,7 @@ def test_deploy_pull_failure(mock_process, monkeypatch, tmp_path):
 
 
 def test_deploy_lock_held(mock_process, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
+    _chdir(monkeypatch, tmp_path)
     # No git or compose responses needed — lock check happens first
     # Pre-acquire lock with current PID
     from flow_deploy import lock
@@ -223,7 +225,7 @@ def test_deploy_lock_held(mock_process, monkeypatch, tmp_path):
 
 
 def test_deploy_missing_healthcheck(mock_process, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
+    _chdir(monkeypatch, tmp_path)
     config_no_hc = """\
 services:
   web:
@@ -243,7 +245,7 @@ services:
 
 
 def test_deploy_no_services(mock_process, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
+    _chdir(monkeypatch, tmp_path)
     config_empty = "services:\n  redis:\n    image: redis:7\n"
     mock_process.responses.extend(
         [
@@ -257,7 +259,7 @@ def test_deploy_no_services(mock_process, monkeypatch, tmp_path):
 
 
 def test_deploy_compose_config_failure(mock_process, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
+    _chdir(monkeypatch, tmp_path)
     mock_process.responses.extend(
         [
             *_git_preflight(),
@@ -270,7 +272,7 @@ def test_deploy_compose_config_failure(mock_process, monkeypatch, tmp_path):
 
 
 def test_deploy_container_count_mismatch(mock_process, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
+    _chdir(monkeypatch, tmp_path)
     single_svc_config = """\
 services:
   web:
@@ -305,44 +307,9 @@ def test_deploy_order(mock_process, monkeypatch, tmp_path, capsys):
     assert web_pos < worker_pos
 
 
-def test_rollback(mock_process, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    # Write tag history
-    from flow_deploy import tags
-
-    tags.write_tag("v1")
-    tags.write_tag("v2")
-
-    # Setup deploy responses for rollback to v1
-    single_svc_config = """\
-services:
-  web:
-    image: app:latest
-    labels:
-      deploy.role: app
-    healthcheck:
-      test: ["CMD", "true"]
-"""
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(single_svc_config),
-            _ok(),
-            _ok(),
-            _ok(WEB_CONTAINER_OLD + "\n" + WEB_CONTAINER_NEW + "\n"),
-            _ok("healthy\n"),
-            _ok(),
-            _ok(),
-            _ok(),
-        ]
-    )
-    result = rollback(cmd=COMPOSE_CMD)
-    assert result == 0
-
-
 def test_deploy_restore_failure_retains_lock(mock_process, monkeypatch, tmp_path, capsys):
     """If git restore fails after a deploy failure, the lock should be retained."""
-    monkeypatch.chdir(tmp_path)
+    _chdir(monkeypatch, tmp_path)
     mock_process.responses.extend(
         [
             *_git_preflight(),
@@ -366,7 +333,7 @@ def test_deploy_restore_failure_retains_lock(mock_process, monkeypatch, tmp_path
 
 
 def test_deploy_dirty_tree_fails(mock_process, monkeypatch, tmp_path, capsys):
-    monkeypatch.chdir(tmp_path)
+    _chdir(monkeypatch, tmp_path)
     mock_process.responses.extend(
         [
             # git status --porcelain returns dirty (before compose config)
@@ -377,9 +344,3 @@ def test_deploy_dirty_tree_fails(mock_process, monkeypatch, tmp_path, capsys):
     assert result == 1
     err = capsys.readouterr().err
     assert "dirty" in err
-
-
-def test_rollback_no_previous(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    result = rollback(cmd=COMPOSE_CMD)
-    assert result == 1
