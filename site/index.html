@@ -63,7 +63,7 @@
             </h1>
             <p class="text-lg sm:text-xl text-slate-400 max-w-2xl mx-auto mb-10 leading-relaxed">
                 A minimal, opinionated deployment tool for Docker Compose + Traefik stacks.
-                Rolling deploys, health checks, automatic rollback.
+                Rolling deploys, health checks, automatic failure recovery.
                 Your <code class="text-emerald-400 bg-slate-800/50 px-1.5 py-0.5 rounded text-base">docker-compose.yml</code> is the single source of truth.
             </p>
             <div class="flex flex-col sm:flex-row gap-4 justify-center">
@@ -174,7 +174,7 @@
                             <span class="text-emerald-400 font-mono font-bold text-sm">4</span>
                         </div>
                         <div class="pt-2">
-                            <h3 class="text-white font-semibold">Cutover or rollback</h3>
+                            <h3 class="text-white font-semibold">Cutover or abort</h3>
                             <p class="text-sm text-slate-400">
                                 <span class="text-emerald-400">Healthy?</span> Graceful shutdown of old container, scale back to 1.<br>
                                 <span class="text-red-400">Unhealthy?</span> Remove new container, old continues serving. Exit 1.
@@ -236,10 +236,6 @@
                 <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-5">
                     <code class="text-emerald-400 font-mono text-sm font-medium">deploy</code>
                     <p class="text-slate-400 text-sm mt-2">Rolling deploy of all app services. Supports <code class="text-slate-500">--tag</code>, <code class="text-slate-500">--service</code>, <code class="text-slate-500">--dry-run</code>.</p>
-                </div>
-                <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-5">
-                    <code class="text-emerald-400 font-mono text-sm font-medium">rollback</code>
-                    <p class="text-slate-400 text-sm mt-2">Rollback to the previously deployed image tag from <code class="text-slate-500">.deploy-tag</code> history.</p>
                 </div>
                 <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-5">
                     <code class="text-emerald-400 font-mono text-sm font-medium">status</code>

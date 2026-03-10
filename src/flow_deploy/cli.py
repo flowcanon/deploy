@@ -7,7 +7,7 @@ import click
 
 from flow_deploy import __version__, compose
 from flow_deploy import deploy as deploy_mod
-from flow_deploy import discovery, log, process, tags
+from flow_deploy import discovery, log, process
 
 
 @click.group()
@@ -28,15 +28,6 @@ def deploy(tag, service, dry_run):
 
 
 @main.command()
-@click.option("--service", multiple=True, help="Rollback only specific service(s)")
-def rollback(service):
-    """Rollback to the previously deployed image tag."""
-    services_filter = list(service) if service else None
-    code = deploy_mod.rollback(services_filter=services_filter)
-    sys.exit(code)
-
-
-@main.command()
 def status():
     """Show current state of all managed services."""
     try:
@@ -45,12 +36,12 @@ def status():
         log.error(str(e))
         sys.exit(1)
 
-    from flow_deploy import config, containers
+    from flow_deploy import config, containers, git
 
     all_services = config.parse_services(compose_dict)
-    current = tags.current_tag()
+    current_sha = git.current_sha()
 
-    log.info(f"Current tag: {current or '(none)'}")
+    log.info(f"Current SHA: {current_sha[:7] if current_sha else '(none)'}")
     log.info("")
 
     for svc in all_services:

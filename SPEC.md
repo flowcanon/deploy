@@ -1,6 +1,6 @@
 # Flow Deploy — Specification
 
-A minimal, opinionated deployment tool for Docker Compose + Traefik stacks. Replaces Kamal's useful subset (rolling deploys, health checks, automatic rollback) without its baggage (parallel config, local-first execution, registry coupling).
+A minimal, opinionated deployment tool for Docker Compose + Traefik stacks. Replaces Kamal's useful subset (rolling deploys, health checks, automatic failure recovery) without its baggage (parallel config, local-first execution, registry coupling).
 
 ---
 
@@ -23,7 +23,7 @@ Every service in `docker-compose.yml` is classified by a label:
 
 | Label | Behavior |
 |---|---|
-| `deploy.role=app` | Rolled during deploy. Health-checked. Rolled back on failure. |
+| `deploy.role=app` | Rolled during deploy. Health-checked. Old container preserved on failure. |
 | `deploy.role=accessory` | Never touched during deploy. Only started/stopped via explicit commands. |
 | *(no label)* | Ignored entirely. The tool does not interact with unlabeled services. |
 
@@ -85,7 +85,7 @@ Configuration (via labels on the service):
 
 | Label | Default | Description |
 |---|---|---|
-| `deploy.healthcheck.timeout` | `120` | Seconds to wait for healthy before rollback |
+| `deploy.healthcheck.timeout` | `120` | Seconds to wait for healthy before aborting |
 | `deploy.healthcheck.poll` | `2` | Seconds between health status polls |
 
 ### 2.5 Deploy Order
@@ -213,7 +213,7 @@ services:
     image: ghcr.io/myorg/myapp:${DEPLOY_TAG:-latest}
 ```
 
-The tool writes the deployed tag to a file (`.deploy-tag`) in the project root for introspection.
+The deployed SHA is always available via `git rev-parse HEAD` — the server is kept in detached HEAD at the deployed commit. The tool does not write any state files to the working tree.
 
 ---
 
@@ -230,10 +230,10 @@ The tool expects a project directory containing a checked-out Git repository wit
 │   └── prod                    # Production compose wrapper
 ├── Dockerfile
 ├── .env                        # Environment variables (secrets)
-├── .deploy-tag                 # Written by the tool: current deployed tag
-├── .deploy-lock                # Written by the tool: deploy lock file
 └── (application source)
 ```
+
+The tool writes no state files to the working tree. The deploy lock is stored at `.git/deploy-lock` (invisible to `git status`). The current deployed SHA is always `git rev-parse HEAD`.
 
 ### 3.1 Compose Command Wrapper
 
@@ -296,20 +296,12 @@ flow-deploy deploy [--tag TAG] [--service SERVICE] [--dry-run]
 
 Exit codes:
 - `0` — all services deployed successfully
-- `1` — one or more services failed, rolled back
+- `1` — deploy failed (dirty tree, git error, unhealthy service, etc.)
 - `2` — deploy lock held by another process
 
-### 4.2 `flow-deploy rollback`
+To deploy a previous version, run `flow-deploy deploy --tag <previous-sha>`. The SHA is always a git commit — find it in your CI history or via `git log` on the server.
 
-Rollback to the previously deployed image tag. Reads the prior tag from `.deploy-tag` history (the tool maintains the last 10 tags).
-
-```
-flow-deploy rollback [--service SERVICE]
-```
-
-This performs the same rolling deploy lifecycle using the previous tag.
-
-### 4.3 `flow-deploy status`
+### 4.2 `flow-deploy status`
 
 Show the current state of all managed services.
 
@@ -317,9 +309,9 @@ Show the current state of all managed services.
 flow-deploy status
 ```
 
-Output includes: service name, role, container ID, image tag, health status, uptime.
+Output includes: current HEAD SHA, service name, role, container ID, image tag, health status.
 
-### 4.4 `flow-deploy exec`
+### 4.3 `flow-deploy exec`
 
 Run a command inside a running service container. Convenience wrapper around `docker compose exec`.
 
@@ -327,7 +319,7 @@ Run a command inside a running service container. Convenience wrapper around `do
 flow-deploy exec <service> <command...>
 ```
 
-### 4.5 `flow-deploy logs`
+### 4.4 `flow-deploy logs`
 
 Tail logs for a service. Convenience wrapper around `docker compose logs`.
 
@@ -335,7 +327,7 @@ Tail logs for a service. Convenience wrapper around `docker compose logs`.
 flow-deploy logs <service> [--follow] [--tail N]
 ```
 
-### 4.6 `flow-deploy config`
+### 4.5 `flow-deploy config`
 
 Output resolved deploy configuration as JSON. Used by the GitHub Action to discover hosts without requiring the Python source tree.
 
@@ -349,7 +341,7 @@ flow-deploy config [--command COMMAND]
 
 Reads `COMPOSE_COMMAND` env var (same as all other commands), runs `<compose-command> config`, parses host discovery, and emits a JSON array of host groups to stdout. Errors go to stderr with exit code 1.
 
-### 4.7 `flow-deploy upgrade`
+### 4.6 `flow-deploy upgrade`
 
 Update the tool to the latest release.
 
@@ -363,10 +355,11 @@ This detects the system's libc (musl or glibc), downloads the latest binary from
 
 ## 5. Deploy Locking
 
-Only one deploy may run at a time per project directory. The tool uses a lock file (`.deploy-lock`) containing the PID and timestamp of the running deploy. The lock is:
+Only one deploy may run at a time per project directory. The tool uses a lock file (`.git/deploy-lock`) containing the PID and timestamp of the running deploy. The lock is stored inside `.git/` to avoid dirtying the working tree. The lock is:
 
-- Acquired at the start of `deploy` or `rollback`
+- Acquired before any mutations (git checkout, container changes)
 - Released on completion (success or failure)
+- **Retained** if git restore fails after a failed deploy — prevents further deploys until manual intervention (the error message includes the fix: `git checkout --detach <sha> && rm .git/deploy-lock`)
 - Automatically broken if the holding PID is no longer running (stale lock recovery)
 - Reported with a clear message if held by another process (exit code 2)
 
@@ -411,8 +404,8 @@ Failure output:
 [12:35:13]   starting new container...
 [12:35:13]   waiting for health check (timeout: 120s)...
 [12:37:13]   ✗ health check timeout (120.0s)
-[12:37:13]   rolling back: stopping new container (x9y8z7w)...
-[12:37:14]   rollback complete, old container still serving
+[12:37:13]   aborting: stopping new container (x9y8z7w)...
+[12:37:14]   aborted, old container still serving
 [12:37:14]   ✗ worker FAILED
 [12:37:14]
 [12:37:14]   restoring repo to a1b2c3d...
@@ -620,7 +613,7 @@ The tool has zero configuration files. All behavior is controlled by `x-deploy` 
 | `deploy.dir` | No | `x-deploy.dir` | Project directory on remote host |
 | `deploy.order` | No | `100` | Deploy order (lower first) |
 | `deploy.drain` | No | `30` | Seconds to wait after SIGTERM before SIGKILL |
-| `deploy.healthcheck.timeout` | No | `120` | Seconds before rollback |
+| `deploy.healthcheck.timeout` | No | `120` | Seconds before aborting |
 | `deploy.healthcheck.poll` | No | `2` | Seconds between polls |
 
 **Environment variable overrides** (highest priority, set via GitHub Actions environment):
@@ -657,7 +650,7 @@ All v1 design decisions are made with the v2 roadmap in mind. Specifically:
 - The single-command `flow-deploy deploy` is a convenience that runs prepare + health check + cutover in one shot. v2 splits this into discrete phases without breaking the v1 interface.
 - The `deploy.role` label convention is extensible — v2 adds behavior, not new classification schemes.
 - The compose command wrapper (§3.1) means the tool never makes assumptions about compose file structure, which keeps it compatible with arbitrarily complex service topologies.
-- The `.deploy-tag` file is the only state the tool writes. v2 adds `.deploy-prepare` for two-phase state tracking, but the tag history mechanism is unchanged.
+- The tool writes no state to the working tree. The deploy lock lives in `.git/deploy-lock`, and the current deployed SHA is always `git rev-parse HEAD`. v2 adds `.git/deploy-prepare` for two-phase state tracking.
 - Host discovery via `x-deploy` and `deploy.host` labels (§2.6) gives the GitHub Action enough information to orchestrate multi-host deploys in v1 (sequential) and v2 (two-phase coordinated).
 
 ---

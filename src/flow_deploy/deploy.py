@@ -1,9 +1,9 @@
-"""Core deploy algorithm + rollback."""
+"""Core deploy algorithm."""
 
 import signal
 import time
 
-from flow_deploy import compose, config, containers, git, lock, log, tags
+from flow_deploy import compose, config, containers, git, lock, log
 
 
 def deploy(
@@ -17,7 +17,7 @@ def deploy(
 
     # Determine tag
     if tag is None:
-        tag = tags.current_tag() or "latest"
+        tag = "latest"
 
     if dry_run:
         # Dry run: just parse config from current checkout, no git or lock
@@ -92,7 +92,6 @@ def deploy(
                 return 1
 
         elapsed = time.time() - start_time
-        tags.write_tag(tag)
 
         log.info("")
         log.info(f"HEAD detached at {tag}")
@@ -101,7 +100,7 @@ def deploy(
         if keep_lock:
             log.error(
                 "Lock retained — git restore failed, manual intervention required. "
-                "Run: git checkout --detach <sha> && rm .deploy-lock"
+                "Run: git checkout --detach <sha> && rm .git/deploy-lock"
             )
         else:
             lock.release()
@@ -207,12 +206,12 @@ def _deploy_service(
         log.service_end()
         return 0
     else:
-        # 5b. Rollback: stop new, remove new, scale back
-        log.step(f"rolling back: stopping new container ({new_id[:7]})...")
+        # 5b. Abort: stop new, remove new, scale back
+        log.step(f"aborting: stopping new container ({new_id[:7]})...")
         containers.stop_container(new_id)
         containers.remove_container(new_id)
         _scale_back(svc.name, env, compose_cmd)
-        log.step("rollback complete, old container still serving")
+        log.step("aborted, old container still serving")
         log.failure(f"{svc.name} FAILED")
         log.service_end()
         return 1
@@ -255,17 +254,3 @@ def _dry_run(tag: str, services: list[config.ServiceConfig]) -> None:
         log.step("would scale back to 1")
         log.service_end()
     log.footer("dry-run complete")
-
-
-def rollback(
-    services_filter: list[str] | None = None,
-    cmd: list[str] | None = None,
-) -> int:
-    """Rollback to the previous tag. Returns exit code."""
-    prev = tags.previous_tag()
-    if prev is None:
-        log.error("No previous tag to rollback to")
-        return 1
-
-    log.info(f"Rolling back to tag: {prev}")
-    return deploy(tag=prev, services_filter=services_filter, cmd=cmd)
