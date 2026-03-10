@@ -12,53 +12,31 @@ def deploy(
     dry_run: bool = False,
     cmd: list[str] | None = None,
 ) -> int:
-    """Perform a rolling deploy. Returns exit code (0=success, 1=failure, 2=locked, 3=skipped)."""
+    """Perform a rolling deploy. Returns exit code (0=success, 1=failure, 2=locked)."""
     compose_cmd = cmd or compose.resolve_command()
-
-    # Parse compose config
-    try:
-        compose_dict = compose.compose_config(cmd=compose_cmd)
-    except RuntimeError as e:
-        log.error(str(e))
-        return 1
-
-    all_services = config.parse_services(compose_dict)
-    app_services = [s for s in all_services if s.is_app]
-
-    if services_filter:
-        app_services = [s for s in app_services if s.name in services_filter]
-
-    if not app_services:
-        log.error("No app services to deploy")
-        return 1
-
-    # Validate healthchecks
-    missing = config.validate_healthchecks(app_services)
-    if missing:
-        log.error(f"Services missing healthcheck: {', '.join(missing)}")
-        return 1
 
     # Determine tag
     if tag is None:
-        # Use whatever is in compose config (no override)
         tag = tags.current_tag() or "latest"
 
     if dry_run:
+        # Dry run: just parse config from current checkout, no git or lock
+        try:
+            compose_dict = compose.compose_config(cmd=compose_cmd)
+        except RuntimeError as e:
+            log.error(str(e))
+            return 1
+        app_services = _resolve_app_services(compose_dict, services_filter)
+        if app_services is None:
+            return 1
         _dry_run(tag, app_services)
         return 0
 
-    # Git pre-flight: dirty check, fetch, checkout detached
-    git_code, previous_sha = git.preflight_and_checkout(tag)
-    if git_code != 0:
-        return 1
-
-    # Acquire lock
+    # Acquire lock before any mutations (git checkout, container changes)
     if not lock.acquire():
         lock_info = lock.read_lock()
         pid = lock_info["pid"] if lock_info else "unknown"
         log.error(f"Deploy lock held by PID {pid}")
-        # Restore repo to previous state before exiting
-        git.restore(previous_sha)
         return 2
 
     # Register signal handlers for cleanup
@@ -73,7 +51,29 @@ def deploy(
     signal.signal(signal.SIGTERM, _cleanup_handler)
     signal.signal(signal.SIGINT, _cleanup_handler)
 
+    keep_lock = False
     try:
+        # Git pre-flight: dirty check, fetch, checkout detached.
+        # Protected by the lock so concurrent deploys can't race on checkout.
+        # Must happen before config parsing so we read the compose file
+        # from the target commit, not whatever is currently checked out.
+        git_code, previous_sha = git.preflight_and_checkout(tag)
+        if git_code != 0:
+            return 1
+
+        # Parse compose config (now reading from the target commit)
+        try:
+            compose_dict = compose.compose_config(cmd=compose_cmd)
+        except RuntimeError as e:
+            log.error(str(e))
+            keep_lock = not git.restore(previous_sha)
+            return 1
+
+        app_services = _resolve_app_services(compose_dict, services_filter)
+        if app_services is None:
+            keep_lock = not git.restore(previous_sha)
+            return 1
+
         service_names = ", ".join(s.name for s in app_services)
         log.header("deploy")
         log.info(f"tag: {tag}")
@@ -87,9 +87,8 @@ def deploy(
             result = _deploy_service(svc, tag, compose_cmd, project=project)
             if result != 0:
                 log.info("")
-                git.restore(previous_sha)
+                keep_lock = not git.restore(previous_sha)
                 log.footer("FAILED (deploy aborted)")
-                lock.release()
                 return 1
 
         elapsed = time.time() - start_time
@@ -99,11 +98,39 @@ def deploy(
         log.info(f"HEAD detached at {tag}")
         log.footer(f"complete ({elapsed:.1f}s)")
     finally:
-        lock.release()
+        if keep_lock:
+            log.error(
+                "Lock retained — git restore failed, manual intervention required. "
+                "Run: git checkout --detach <sha> && rm .deploy-lock"
+            )
+        else:
+            lock.release()
         signal.signal(signal.SIGTERM, _original_sigterm)
         signal.signal(signal.SIGINT, _original_sigint)
 
     return 0
+
+
+def _resolve_app_services(
+    compose_dict: dict, services_filter: list[str] | None
+) -> list[config.ServiceConfig] | None:
+    """Parse and validate app services from compose config. Returns None on error."""
+    all_services = config.parse_services(compose_dict)
+    app_services = [s for s in all_services if s.is_app]
+
+    if services_filter:
+        app_services = [s for s in app_services if s.name in services_filter]
+
+    if not app_services:
+        log.error("No app services to deploy")
+        return None
+
+    missing = config.validate_healthchecks(app_services)
+    if missing:
+        log.error(f"Services missing healthcheck: {', '.join(missing)}")
+        return None
+
+    return app_services
 
 
 def _deploy_service(

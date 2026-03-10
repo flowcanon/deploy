@@ -86,10 +86,10 @@ def _setup_happy_path(mock_process, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     mock_process.responses.extend(
         [
+            # git preflight (before compose config)
+            *_git_preflight(),
             # compose config
             _ok(COMPOSE_CONFIG_YAML),
-            # git preflight
-            *_git_preflight(),
             # web: pull
             _ok(),
             # web: scale to 2
@@ -136,8 +136,8 @@ def test_deploy_service_filter(mock_process, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     mock_process.responses.extend(
         [
-            _ok(COMPOSE_CONFIG_YAML),
             *_git_preflight(),
+            _ok(COMPOSE_CONFIG_YAML),
             # web only: pull, scale, ps, health, stop, rm, scale back
             _ok(),
             _ok(),
@@ -171,8 +171,8 @@ def test_deploy_health_check_failure(mock_process, monkeypatch, tmp_path):
     monkeypatch.setattr("flow_deploy.deploy._wait_for_healthy", lambda *a, **kw: False)
     mock_process.responses.extend(
         [
-            _ok(COMPOSE_CONFIG_YAML),
             *_git_preflight(),
+            _ok(COMPOSE_CONFIG_YAML),
             # web: pull
             _ok(),
             # web: scale to 2
@@ -197,8 +197,8 @@ def test_deploy_pull_failure(mock_process, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     mock_process.responses.extend(
         [
-            _ok(COMPOSE_CONFIG_YAML),
             *_git_preflight(),
+            _ok(COMPOSE_CONFIG_YAML),
             _err("pull failed"),
             # git restore to previous SHA
             _ok(),
@@ -210,14 +210,7 @@ def test_deploy_pull_failure(mock_process, monkeypatch, tmp_path):
 
 def test_deploy_lock_held(mock_process, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    mock_process.responses.extend(
-        [
-            _ok(COMPOSE_CONFIG_YAML),
-            *_git_preflight(),
-            # git restore after lock rejection
-            _ok(),
-        ]
-    )
+    # No git or compose responses needed — lock check happens first
     # Pre-acquire lock with current PID
     from flow_deploy import lock
 
@@ -238,7 +231,13 @@ services:
     labels:
       deploy.role: app
 """
-    mock_process.responses.append(_ok(config_no_hc))
+    mock_process.responses.extend(
+        [
+            *_git_preflight(),
+            _ok(config_no_hc),
+            _ok(),  # git restore
+        ]
+    )
     result = deploy(tag="abc123", cmd=COMPOSE_CMD)
     assert result == 1
 
@@ -246,14 +245,26 @@ services:
 def test_deploy_no_services(mock_process, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     config_empty = "services:\n  redis:\n    image: redis:7\n"
-    mock_process.responses.append(_ok(config_empty))
+    mock_process.responses.extend(
+        [
+            *_git_preflight(),
+            _ok(config_empty),
+            _ok(),  # git restore
+        ]
+    )
     result = deploy(tag="abc123", cmd=COMPOSE_CMD)
     assert result == 1
 
 
 def test_deploy_compose_config_failure(mock_process, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    mock_process.responses.append(_err("compose error"))
+    mock_process.responses.extend(
+        [
+            *_git_preflight(),
+            _err("compose error"),
+            _ok(),  # git restore
+        ]
+    )
     result = deploy(tag="abc123", cmd=COMPOSE_CMD)
     assert result == 1
 
@@ -271,8 +282,8 @@ services:
 """
     mock_process.responses.extend(
         [
-            _ok(single_svc_config),
             *_git_preflight(),
+            _ok(single_svc_config),
             _ok(),  # pull
             _ok(),  # scale to 2
             _ok(WEB_CONTAINER_OLD + "\n"),  # only 1 container returned
@@ -314,8 +325,8 @@ services:
 """
     mock_process.responses.extend(
         [
-            _ok(single_svc_config),
             *_git_preflight(),
+            _ok(single_svc_config),
             _ok(),
             _ok(),
             _ok(WEB_CONTAINER_OLD + "\n" + WEB_CONTAINER_NEW + "\n"),
@@ -329,12 +340,36 @@ services:
     assert result == 0
 
 
+def test_deploy_restore_failure_retains_lock(mock_process, monkeypatch, tmp_path, capsys):
+    """If git restore fails after a deploy failure, the lock should be retained."""
+    monkeypatch.chdir(tmp_path)
+    mock_process.responses.extend(
+        [
+            *_git_preflight(),
+            _ok(COMPOSE_CONFIG_YAML),
+            # web: pull fails
+            _err("pull failed"),
+            # git restore fails
+            _err("checkout error"),
+        ]
+    )
+    result = deploy(tag="abc123", cmd=COMPOSE_CMD)
+    assert result == 1
+    # Lock should still be held
+    from flow_deploy import lock
+
+    assert not lock.acquire(), "Lock should still be held after restore failure"
+    err = capsys.readouterr().err
+    assert "Lock retained" in err
+    # Clean up for other tests
+    lock.release()
+
+
 def test_deploy_dirty_tree_fails(mock_process, monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
     mock_process.responses.extend(
         [
-            _ok(COMPOSE_CONFIG_YAML),
-            # git status --porcelain returns dirty
+            # git status --porcelain returns dirty (before compose config)
             _ok(" M somefile.py\n"),
         ]
     )
