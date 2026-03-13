@@ -13,6 +13,7 @@ class ServiceConfig:
     healthcheck_timeout: int
     healthcheck_poll: int
     has_healthcheck: bool
+    healthcheck_skip: bool
     file_order: int
     host: str | None = None
     user: str | None = None
@@ -62,6 +63,11 @@ def parse_services(compose_dict: dict) -> list[ServiceConfig]:
             continue
 
         has_healthcheck = "healthcheck" in svc and svc["healthcheck"].get("test") is not None
+        healthcheck_skip = _get_label(labels, "deploy.healthcheck.skip", "").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
 
         # Host discovery: per-service label → x-deploy default → None
         host = _get_label(labels, "deploy.host") or x_deploy.get("host")
@@ -80,6 +86,7 @@ def parse_services(compose_dict: dict) -> list[ServiceConfig]:
                 healthcheck_timeout=int(_get_label(labels, "deploy.healthcheck.timeout", "120")),
                 healthcheck_poll=int(_get_label(labels, "deploy.healthcheck.poll", "2")),
                 has_healthcheck=has_healthcheck,
+                healthcheck_skip=healthcheck_skip,
                 file_order=idx,
                 host=host,
                 user=user,
@@ -93,5 +100,10 @@ def parse_services(compose_dict: dict) -> list[ServiceConfig]:
 
 
 def validate_healthchecks(services: list[ServiceConfig]) -> list[str]:
-    """Return list of app services missing healthchecks."""
-    return [s.name for s in services if s.is_app and not s.has_healthcheck]
+    """Return list of app services missing healthchecks.
+
+    Services with deploy.healthcheck.skip=true are excluded from validation.
+    """
+    return [
+        s.name for s in services if s.is_app and not s.has_healthcheck and not s.healthcheck_skip
+    ]

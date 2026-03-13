@@ -19,6 +19,7 @@ def deploy(
     if tag is None:
         tag = "latest"
 
+
     if dry_run:
         # Dry run: just parse config from current checkout, no git or lock
         try:
@@ -187,13 +188,18 @@ def _deploy_service(
     new_id = new["ID"]
     old_id = old["ID"]
 
-    # 4. Wait for health check
-    log.step(f"waiting for health check (timeout: {svc.healthcheck_timeout}s)...")
-    healthy = _wait_for_healthy(new_id, svc.healthcheck_timeout, svc.healthcheck_poll)
+    # 4. Wait for health check (skip if deploy.healthcheck.skip)
+    if svc.healthcheck_skip:
+        log.step("healthcheck skipped (deploy.healthcheck.skip=true)")
+        healthy = True
+    else:
+        log.step(f"waiting for health check (timeout: {svc.healthcheck_timeout}s)...")
+        healthy = _wait_for_healthy(new_id, svc.healthcheck_timeout, svc.healthcheck_poll)
 
     if healthy:
-        health_elapsed = time.time() - svc_start
-        log.step(f"healthy ({health_elapsed:.1f}s)")
+        if not svc.healthcheck_skip:
+            health_elapsed = time.time() - svc_start
+            log.step(f"healthy ({health_elapsed:.1f}s)")
 
         # 5a. Cutover: stop old, remove old, scale back
         log.step(f"draining old container ({old_id[:7]}, {svc.drain}s timeout)...")

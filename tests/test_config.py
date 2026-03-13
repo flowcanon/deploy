@@ -203,6 +203,46 @@ def test_validate_healthchecks_all_good():
     assert validate_healthchecks(services) == []
 
 
+def test_healthcheck_skip_excludes_from_validation():
+    d = _compose_dict(
+        (
+            "web",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        ),
+        (
+            "beat",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app", "deploy.healthcheck.skip": "true"},
+            },
+        ),
+    )
+    services = parse_services(d)
+    beat = next(s for s in services if s.name == "beat")
+    assert beat.healthcheck_skip
+    assert not beat.has_healthcheck
+    assert validate_healthchecks(services) == []
+
+
+def test_healthcheck_skip_false_by_default():
+    d = _compose_dict(
+        (
+            "web",
+            {
+                "image": "app:latest",
+                "labels": {"deploy.role": "app"},
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+        ),
+    )
+    svc = parse_services(d)[0]
+    assert not svc.healthcheck_skip
+
+
 def test_empty_services():
     assert parse_services({"services": {}}) == []
     assert parse_services({}) == []

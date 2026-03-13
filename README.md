@@ -35,7 +35,7 @@ services:
       retries: 5
 ```
 
-Every `deploy.role=app` service **must** have a `healthcheck`. Services without a `deploy.role` label are ignored.
+Every `deploy.role=app` service **must** have a `healthcheck` defined in compose (Dockerfile `HEALTHCHECK` is not detected). To opt out, set `deploy.healthcheck.skip=true`. Services without a `deploy.role` label are ignored.
 
 **2. Deploy:**
 
@@ -88,6 +88,7 @@ All configuration is via Docker labels on your services:
 | `deploy.drain` | `30` | Seconds to wait for graceful shutdown |
 | `deploy.healthcheck.timeout` | `120` | Seconds to wait for healthy |
 | `deploy.healthcheck.poll` | `2` | Seconds between health polls |
+| `deploy.healthcheck.skip` | `false` | Skip healthcheck validation and waiting |
 
 ## Host Discovery
 
