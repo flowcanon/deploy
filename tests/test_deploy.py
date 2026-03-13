@@ -344,3 +344,38 @@ def test_deploy_dirty_tree_fails(mock_process, monkeypatch, tmp_path, capsys):
     assert result == 1
     err = capsys.readouterr().err
     assert "dirty" in err
+
+
+def test_deploy_healthcheck_skip(mock_process, monkeypatch, tmp_path):
+    """Services with deploy.healthcheck.skip=true skip health check waiting."""
+    _chdir(monkeypatch, tmp_path)
+    config_with_skip = """\
+services:
+  beat:
+    image: app:latest
+    labels:
+      deploy.role: app
+      deploy.healthcheck.skip: "true"
+      deploy.drain: "1"
+"""
+    mock_process.responses.extend(
+        [
+            *_git_preflight(),
+            _ok(config_with_skip),
+            # beat: pull
+            _ok(),
+            # beat: scale to 2
+            _ok(),
+            # beat: docker ps
+            _ok(WEB_CONTAINER_OLD + "\n" + WEB_CONTAINER_NEW + "\n"),
+            # beat: no health check poll — skips straight to cutover
+            # beat: docker stop old
+            _ok(),
+            # beat: docker rm old
+            _ok(),
+            # beat: scale back to 1
+            _ok(),
+        ]
+    )
+    result = deploy(tag="abc123", cmd=COMPOSE_CMD)
+    assert result == 0
