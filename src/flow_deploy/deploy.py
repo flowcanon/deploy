@@ -15,10 +15,10 @@ def deploy(
     """Perform a rolling deploy. Returns exit code (0=success, 1=failure, 2=locked)."""
     compose_cmd = cmd or compose.resolve_command()
 
-    # Determine tag
-    if tag is None:
-        tag = "latest"
-
+    # Determine tag: if not provided, deploy whatever is currently checked out
+    tag_provided = tag is not None
+    if not tag_provided:
+        tag = git.current_sha()
 
     if dry_run:
         # Dry run: just parse config from current checkout, no git or lock
@@ -58,7 +58,7 @@ def deploy(
         # Protected by the lock so concurrent deploys can't race on checkout.
         # Must happen before config parsing so we read the compose file
         # from the target commit, not whatever is currently checked out.
-        git_code, previous_sha = git.preflight_and_checkout(tag)
+        git_code, previous_sha = git.preflight_and_checkout(tag if tag_provided else None)
         if git_code != 0:
             return 1
 
