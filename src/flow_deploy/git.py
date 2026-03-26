@@ -25,11 +25,14 @@ def checkout_detached(sha: str) -> process.Result:
     return process.run(["git", "checkout", "--detach", sha])
 
 
-def preflight_and_checkout(tag: str) -> tuple[int, str | None]:
-    """Run git pre-flight checks and checkout the deploy SHA.
+def preflight_and_checkout(tag: str | None = None) -> tuple[int, str | None]:
+    """Run git pre-flight checks and optionally checkout the deploy SHA.
+
+    When tag is provided, checks out that ref in detached HEAD mode.
+    When tag is None, runs preflight only (dirty check + fetch) without checkout.
 
     Returns (exit_code, previous_sha).
-    - (0, previous_sha) on success — repo is now at `tag` in detached HEAD.
+    - (0, previous_sha) on success.
     - (1, None) on error — git operation failed or working tree is dirty.
     """
     # 1. Dirty check
@@ -46,11 +49,12 @@ def preflight_and_checkout(tag: str) -> tuple[int, str | None]:
     # 3. Record previous SHA
     previous_sha = current_sha()
 
-    # 4. Checkout new SHA (detached HEAD)
-    result = checkout_detached(tag)
-    if result.returncode != 0:
-        log.error(f"git checkout failed: {result.stderr.strip()}")
-        return 1, None
+    # 4. Checkout new SHA (detached HEAD) — skip when deploying current HEAD
+    if tag is not None:
+        result = checkout_detached(tag)
+        if result.returncode != 0:
+            log.error(f"git checkout failed: {result.stderr.strip()}")
+            return 1, None
 
     return 0, previous_sha
 

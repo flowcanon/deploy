@@ -81,6 +81,18 @@ def _git_preflight():
     ]
 
 
+HEAD_SHA = "head456def"
+
+
+def _git_preflight_no_checkout():
+    """Return the 3 mock responses for preflight when no tag is provided (no checkout)."""
+    return [
+        _ok(""),  # git status --porcelain (clean)
+        _ok(),  # git fetch origin
+        _ok(HEAD_SHA + "\n"),  # git rev-parse HEAD
+    ]
+
+
 def _chdir(monkeypatch, tmp_path):
     """Set working directory and ensure .git/ exists for lock file."""
     (tmp_path / ".git").mkdir(exist_ok=True)
@@ -379,3 +391,61 @@ services:
     )
     result = deploy(tag="abc123", cmd=COMPOSE_CMD)
     assert result == 0
+
+
+def test_deploy_no_tag_uses_head(mock_process, monkeypatch, tmp_path):
+    """Deploy without --tag uses current HEAD SHA and skips git checkout."""
+    _chdir(monkeypatch, tmp_path)
+    single_svc_config = """\
+services:
+  web:
+    image: app:latest
+    labels:
+      deploy.role: app
+    healthcheck:
+      test: ["CMD", "true"]
+"""
+    mock_process.responses.extend(
+        [
+            # git rev-parse HEAD for tag resolution
+            _ok(HEAD_SHA + "\n"),
+            # git preflight (no checkout)
+            *_git_preflight_no_checkout(),
+            # compose config
+            _ok(single_svc_config),
+            # web: pull
+            _ok(),
+            # web: scale to 2
+            _ok(),
+            # web: docker ps
+            _ok(WEB_CONTAINER_OLD + "\n" + WEB_CONTAINER_NEW + "\n"),
+            # web: health check
+            _ok("healthy\n"),
+            # web: docker stop old
+            _ok(),
+            # web: docker rm old
+            _ok(),
+            # web: scale back to 1
+            _ok(),
+        ]
+    )
+    result = deploy(cmd=COMPOSE_CMD)
+    assert result == 0
+
+
+def test_deploy_no_tag_dry_run(mock_process, monkeypatch, tmp_path, capsys):
+    """Dry run without --tag resolves tag from HEAD."""
+    _chdir(monkeypatch, tmp_path)
+    mock_process.responses.extend(
+        [
+            # git rev-parse HEAD for tag resolution
+            _ok(HEAD_SHA + "\n"),
+            # compose config
+            _ok(COMPOSE_CONFIG_YAML),
+        ]
+    )
+    result = deploy(dry_run=True, cmd=COMPOSE_CMD)
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "dry-run" in out
+    assert HEAD_SHA in out

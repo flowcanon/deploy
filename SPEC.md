@@ -29,7 +29,7 @@ Every service in `docker-compose.yml` is classified by a label:
 
 ### 2.2 Deploy Lifecycle
 
-The deploy runs as a single transaction — `flow-deploy deploy --tag <sha>` owns the full lifecycle including git operations. The `--tag` value serves double duty: it is both the Docker image tag and the git SHA to checkout.
+The deploy runs as a single transaction — `flow-deploy deploy` owns the full lifecycle including git operations. When `--tag <sha>` is provided, the value serves double duty: it is both the Docker image tag and the git SHA to checkout. When `--tag` is omitted, the tool deploys the current HEAD — the git checkout is skipped and `DEPLOY_TAG` is set to the current commit SHA.
 
 **Pre-flight and git checkout (before any service work):**
 
@@ -38,7 +38,7 @@ The deploy runs as a single transaction — `flow-deploy deploy --tag <sha>` own
                              If non-empty → log "working tree is dirty — deploy aborted", exit 1
 0b. Fetch                   git fetch origin
 0c. Record previous SHA     previous_sha = git rev-parse HEAD
-0d. Checkout (detached)     git checkout --detach <sha>
+0d. Checkout (detached)     git checkout --detach <sha>   (skipped when --tag is omitted)
 ```
 
 **For each service with `deploy.role=app`, in the order they appear in the compose file:**
@@ -199,13 +199,13 @@ The GitHub Action (§7) reads these values by running `<compose-command> config`
 
 ### 2.8 Versioning and Image Tags
 
-The tool needs to know which image tag to deploy. By default it pulls whatever tag is declared in the compose file (typically `latest` or a pinned tag). This can be overridden at deploy time:
+The tool needs to know which image tag to deploy. When `--tag` is omitted, the tool uses the current HEAD SHA — deploying whatever is currently checked out. When `--tag` is provided, the tool checks out that ref and uses it as the image tag:
 
 ```
 flow-deploy deploy --tag abc123f
 ```
 
-When `--tag` is provided, the tool temporarily overrides the image tag for all `deploy.role=app` services before pulling. This is implemented via the `DEPLOY_TAG` environment variable, which compose files can reference:
+The `--tag` value temporarily overrides the image tag for all `deploy.role=app` services before pulling. This is implemented via the `DEPLOY_TAG` environment variable, which compose files can reference:
 
 ```yaml
 services:
@@ -290,7 +290,7 @@ flow-deploy deploy [--tag TAG] [--service SERVICE] [--dry-run]
 
 | Flag | Description |
 |---|---|
-| `--tag TAG` | Override image tag for all app services |
+| `--tag TAG` | Image tag and git ref to deploy (defaults to current HEAD SHA) |
 | `--service SERVICE` | Deploy only a specific service (repeatable) |
 | `--dry-run` | Show what would happen without executing |
 
@@ -563,7 +563,7 @@ cd /srv/myapp
 script/prod up -d postgres redis
 
 # First deploy
-flow-deploy deploy --tag latest
+flow-deploy deploy
 ```
 
 ### 8.3 Upgrading Across a Fleet

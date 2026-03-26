@@ -96,6 +96,21 @@ def test_preflight_checkout_failure(mock_process):
     assert prev is None
 
 
+def test_preflight_no_tag_skips_checkout(mock_process):
+    """When tag is None, preflight runs dirty check + fetch but skips checkout."""
+    mock_process.responses.extend(
+        [
+            _ok(""),  # git status --porcelain (clean)
+            _ok(),  # git fetch origin
+            _ok("head123\n"),  # git rev-parse HEAD
+        ]
+    )
+    code, prev = preflight_and_checkout(None)
+    assert code == 0
+    assert prev == "head123"
+    assert len(mock_process.calls) == 3  # no checkout call
+
+
 def test_restore_success(mock_process, capsys):
     mock_process.responses.append(_ok())
     assert restore("prev123") is True
