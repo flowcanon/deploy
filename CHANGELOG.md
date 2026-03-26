@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/flowcanon/deploy/compare/v0.2.7...v0.3.0) (2026-03-26)
+
+- Allow deploy command to work via cli [#29](https://github.com/flowcanon/deploy/pull/29)
+- Deprecate rollback command in favor of deploy recovering from failure [Minor] [#25](https://github.com/flowcanon/deploy/pull/25)
+- preflight before compose validation & healthcheck.skip [#27](https://github.com/flowcanon/deploy/pull/27)
+
+
 ### [0.2.7](https://github.com/flowcanon/deploy/compare/v0.2.6...v0.2.7) (2026-03-09)
 
 - Self-contains the  command which manages git actions [#23](https://github.com/flowcanon/deploy/pull/23)
