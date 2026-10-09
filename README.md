@@ -113,18 +113,17 @@ phases:
 The service is down from the start of its drain until phase 3. Queued work
 waits in the broker and the new worker picks it up.
 
-If the deploy fails before phase 3, drained services are restarted on the image
-tag they were running before, at the same replica count. This includes a
-container that won't stop or be removed, which aborts the deploy before
-anything rolls.
+On failure, one rule decides what happens to drained services. Phase 3 still
+starts every drain-first service even if an earlier one fails, and a failed
+start's container is stopped and removed.
 
-Every drain-first service is started in phase 3, even if an earlier one fails.
-If one fails its start:
-
-- When no rolling service deployed (e.g. `--service worker`), it's restored on
-  its previous tag.
-- Otherwise it's left down. Its old code would run against whatever the rolling
-  phase changed, so an operator takes it from there.
+- **No rolling service has deployed yet.** This covers a drain that fails,
+  including a container that won't stop or be removed, and a failure at the
+  first rolling service. It also covers `--service worker`. Drained services
+  come back on the image tag they were running, at the same replica count.
+- **A rolling service has deployed.** Drained services, and any that failed to
+  start, are left down. Their old code would run beside the new services and
+  against any migration they ran, so an operator starts them on a fixed tag.
 
 Deploying rolling services with `--service` while leaving drain-first services
 out prints a warning, since those keep running old code.

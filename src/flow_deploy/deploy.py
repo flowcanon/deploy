@@ -89,33 +89,49 @@ def deploy(
         drain_first = [s for s in app_services if s.drains_first]
         rolling = [s for s in app_services if not s.drains_first]
 
-        def abort(drained, footer="FAILED (deploy aborted)"):
-            """Restore the repo, then drained services on their old tags."""
+        shipped = []  # rolling services that deployed in this run
+
+        def abort(down, reason):
+            """Restore the repo; bring ``down`` back on their old tags if safe.
+
+            Safe only while no rolling service has shipped. Once one has, old
+            drain-first code would run beside it (and against any migration
+            it ran), so those services stay down for an operator.
+            """
             nonlocal keep_lock, lock_reason
             log.info("")
             if not git.restore(previous_sha):
                 keep_lock, lock_reason = True, "git restore failed"
-            if not _restore_drained(drained, compose_cmd):
+            names = ", ".join(r.svc.name for r in down if r.replicas or r in failed)
+            if shipped and names:
+                log.failure(
+                    f"{names} left down: {', '.join(shipped)} already deployed, so their "
+                    "old code can't run safely; start them on a fixed tag"
+                )
+                reason = f"{reason}; {names} down"
+            elif not _restore_drained(down, compose_cmd):
                 keep_lock, lock_reason = True, "drained services could not be restored"
-            log.footer(footer)
+            log.footer(f"FAILED ({reason})")
             return 1
 
         # Phase 1: drain-first services stop before anything rolls, so none of
         # their old code runs beside new code or after new migrations. What
         # each one was running is kept to bring it back if the deploy fails.
         drained: list[Drained] = []
+        failed: list[Drained] = []
         for svc in drain_first:
             result, record = _drain_service(svc, tag, compose_cmd, project=project)
             if record is not None:
                 drained.append(record)
             if result != 0:
-                return abort(drained)
+                return abort(drained, "deploy aborted")
 
         # Phase 2: rolling services, as before.
         for svc in rolling:
             result = _deploy_service(svc, tag, compose_cmd, project=project)
             if result != 0:
-                return abort(drained)
+                return abort(drained, "deploy aborted")
+            shipped.append(svc.name)
 
         # Phase 3: drain-first services start on the new tag. Every one is
         # attempted, so one failure doesn't strand the rest.
@@ -126,16 +142,7 @@ def deploy(
         ]
         if failed:
             names = ", ".join(r.svc.name for r in failed)
-            if not rolling:
-                # Nothing else changed, so the old tags are still safe to run.
-                return abort(failed, footer=f"FAILED ({names} restored on previous tag)")
-            # Rolling services shipped: old code would now run against
-            # whatever they changed, so the failed services stay down.
-            log.info("")
-            if not git.restore(previous_sha):
-                keep_lock, lock_reason = True, "git restore failed"
-            log.footer(f"FAILED ({names} down; rolling services deployed)")
-            return 1
+            return abort(failed, f"{names} failed to start")
 
         elapsed = time.time() - start_time
 
@@ -283,6 +290,7 @@ def _start_service(
     ctrs = containers.get_containers_for_service(svc.name, project=project)
     if result.returncode != 0 or len(ctrs) != 1:
         log.failure(f"start failed: {result.stderr.strip() or f'{len(ctrs)} containers'}")
+        _remove_all(ctrs, timeout=svc.drain)
         log.service_end()
         return 1
 
@@ -291,13 +299,22 @@ def _start_service(
     else:
         log.step(f"waiting for health check (timeout: {svc.healthcheck_timeout}s)...")
         if not _wait_for_healthy(ctrs[0]["ID"], svc.healthcheck_timeout, svc.healthcheck_poll):
-            log.failure(f"{svc.name} unhealthy; left running for inspection")
+            # Remove it: an unhealthy worker may still be consuming, and a
+            # restore on an unchanged config would otherwise reuse it.
+            log.failure(f"{svc.name} unhealthy; stopping and removing it")
+            _remove_all(ctrs, timeout=svc.drain)
             log.service_end()
             return 1
 
     log.success(f"{svc.name} started ({time.time() - svc_start:.1f}s)")
     log.service_end()
     return 0
+
+
+def _remove_all(ctrs: list[dict], timeout: int) -> None:
+    for ctr in ctrs:
+        containers.stop_container(ctr["ID"], timeout=timeout)
+        containers.remove_container(ctr["ID"])
 
 
 def _restore_drained(drained: list[Drained], compose_cmd: list[str]) -> bool:
