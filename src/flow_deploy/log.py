@@ -13,14 +13,26 @@ def _is_github_actions() -> bool:
     return os.environ.get("GITHUB_ACTIONS") == "true"
 
 
+def _write(text: str, stream=None) -> None:
+    """Print, but never raise.
+
+    When a remote deploy's ssh session drops, its stdout and stderr go with
+    it. Logging must not then crash the revert that's putting things back.
+    """
+    try:
+        print(text, file=stream or sys.stdout, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
 def info(msg: str) -> None:
-    print(f"[{_timestamp()}] {msg}", flush=True)
+    _write(f"[{_timestamp()}] {msg}")
 
 
 def header(title: str) -> None:
     line = f"── {title} " + "─" * max(0, 45 - len(title))
     if _is_github_actions():
-        print(f"::group::{title}", flush=True)
+        _write(f"::group::{title}")
     info(line)
 
 
@@ -28,18 +40,18 @@ def footer(title: str) -> None:
     line = f"── {title} " + "─" * max(0, 45 - len(title))
     info(line)
     if _is_github_actions():
-        print("::endgroup::", flush=True)
+        _write("::endgroup::")
 
 
 def service_start(name: str) -> None:
     if _is_github_actions():
-        print(f"::group::{name}", flush=True)
+        _write(f"::group::{name}")
     info(f"▸ {name}")
 
 
 def service_end() -> None:
     if _is_github_actions():
-        print("::endgroup::", flush=True)
+        _write("::endgroup::")
 
 
 def step(msg: str) -> None:
@@ -52,11 +64,11 @@ def success(msg: str) -> None:
 
 def failure(msg: str) -> None:
     if _is_github_actions():
-        print(f"::error::{msg}", flush=True)
+        _write(f"::error::{msg}")
     info(f"  ✗ {msg}")
 
 
 def error(msg: str) -> None:
     if _is_github_actions():
-        print(f"::error::{msg}", flush=True)
-    print(f"[{_timestamp()}] ERROR: {msg}", file=sys.stderr, flush=True)
+        _write(f"::error::{msg}")
+    _write(f"[{_timestamp()}] ERROR: {msg}", stream=sys.stderr)

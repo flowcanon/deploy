@@ -113,6 +113,34 @@ def test_error(capsys):
     assert "ERROR: something broke" in err
 
 
+def test_logging_survives_a_closed_stream(monkeypatch):
+    """A dropped ssh session closes stdout/stderr; logging must not raise."""
+    import io
+
+    from flow_deploy import log
+
+    closed = io.StringIO()
+    closed.close()
+    monkeypatch.setattr("sys.stdout", closed)
+    monkeypatch.setattr("sys.stderr", closed)
+    log.info("still here")
+    log.error("still here")
+
+
+def test_logging_survives_an_io_error(monkeypatch):
+    from flow_deploy import log
+
+    class Hungup:
+        def write(self, _text):
+            raise OSError(5, "Input/output error")
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr("sys.stdout", Hungup())
+    log.step("still here")
+
+
 def test_error_github_actions_annotates(capsys, monkeypatch):
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     from flow_deploy.log import error

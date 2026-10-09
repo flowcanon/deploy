@@ -11,6 +11,10 @@ EXIT_FAILED = 1  # failed; everything it touched was put back
 EXIT_LOCKED = 2
 EXIT_DEGRADED = 3  # failed, and something couldn't be put back
 
+# Signals that revert the deploy. SIGHUP is what a remote deploy gets when its
+# ssh session dies, e.g. when the CI job driving it is cancelled.
+HANDLED_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+
 # Per-service outcomes from _deploy_service and _start_service.
 SVC_OK = 0
 SVC_FAILED = 1  # failed, and its own cleanup succeeded
@@ -56,6 +60,9 @@ class _Run:
         schema, as rolling deploys already assume. Exits 3 only when
         something can't be put back.
         """
+        # Don't let a further signal cut the revert short (or start a second one).
+        for signum in HANDLED_SIGNALS:
+            signal.signal(signum, signal.SIG_IGN)
         if down is None:
             down = [r for r in self.drained if r.svc.name not in self.started]
         log.info("")
@@ -89,12 +96,12 @@ def deploy(
             compose_dict = compose.compose_config(cmd=compose_cmd)
         except RuntimeError as e:
             log.error(str(e))
-            return 1
+            return EXIT_FAILED
         app_services = _resolve_app_services(compose_dict, services_filter)
         if app_services is None:
-            return 1
+            return EXIT_FAILED
         _dry_run(tag, app_services)
-        return 0
+        return EXIT_OK
 
     # Acquire lock before any mutations (git checkout, container changes)
     if not lock.acquire():
@@ -103,23 +110,20 @@ def deploy(
         log.error(f"Deploy lock held by PID {pid}")
         return EXIT_LOCKED
 
-    # A signal (a cancelled CI job, Ctrl-C) reverts like any other failure.
-    _original_sigterm = signal.getsignal(signal.SIGTERM)
-    _original_sigint = signal.getsignal(signal.SIGINT)
+    # A signal (a cancelled CI job, Ctrl-C, a dropped ssh session) reverts
+    # like any other failure.
+    originals = {signum: signal.getsignal(signum) for signum in HANDLED_SIGNALS}
 
     def _interrupt(signum, frame):
         raise Interrupted(signum)
 
-    signal.signal(signal.SIGTERM, _interrupt)
-    signal.signal(signal.SIGINT, _interrupt)
+    for signum in HANDLED_SIGNALS:
+        signal.signal(signum, _interrupt)
 
     run = _Run(compose_cmd)
     try:
         return _deploy_locked(run, tag, tag_provided, services_filter)
     except (Exception, Interrupted) as exc:
-        # Don't let a second signal cut the revert short.
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
         if isinstance(exc, Interrupted):
             reason = f"interrupted by signal {exc.signum}"
         else:
@@ -130,8 +134,8 @@ def deploy(
         # Always released: a failed deploy puts things back rather than
         # leaving state for someone to clean up by hand.
         lock.release()
-        signal.signal(signal.SIGTERM, _original_sigterm)
-        signal.signal(signal.SIGINT, _original_sigint)
+        for signum, handler in originals.items():
+            signal.signal(signum, handler)
 
 
 def _deploy_locked(
@@ -184,10 +188,7 @@ def _deploy_locked(
     # anything rolls, so none of their old code runs beside new code. What
     # each one was running is kept to bring it back on failure.
     for svc in reversed(drain_first):
-        result, record = _drain_service(svc, tag, compose_cmd, project=project)
-        if record is not None:
-            run.drained.append(record)
-        if result != 0:
+        if _drain_service(svc, tag, compose_cmd, run.drained, project=project) != 0:
             return failed("deploy aborted")
 
     # Phase 2: rolling services, in deploy order, as before.
@@ -293,14 +294,20 @@ def _image_tag(image: str) -> str | None:
 
 
 def _drain_service(
-    svc: config.ServiceConfig, tag: str, compose_cmd: list[str], project: str = ""
-) -> tuple[int, Drained | None]:
+    svc: config.ServiceConfig,
+    tag: str,
+    compose_cmd: list[str],
+    drained: list[Drained],
+    project: str = "",
+) -> int:
     """Pull the new image, then stop and remove the running containers.
 
-    Pulls first so an unpullable tag fails before anything stops, returning
-    (1, None). Otherwise returns the record of what was running, with exit
-    code 1 if any container failed to stop or be removed: the caller must not
-    roll anything while old code may still be running.
+    Pulls first so an unpullable tag fails before anything stops. Records
+    what was running on ``drained`` *before* stopping anything, so a signal
+    mid-drain (a drain can take as long as the service's longest task) still
+    knows what to restore. Returns 1 if the pull failed or any container
+    failed to stop or be removed: the caller must not roll anything while old
+    code may still be running.
     """
     log.service_start(svc.name)
     svc_start = time.time()
@@ -308,7 +315,7 @@ def _drain_service(
 
     if not _pull(svc, env, compose_cmd):
         log.service_end()
-        return 1, None
+        return 1
 
     ctrs = containers.get_containers_for_service(svc.name, project=project)
     images = list(dict.fromkeys(c.get("Image", "") for c in ctrs))
@@ -316,6 +323,7 @@ def _drain_service(
     if images:
         record.old_image = images[0]
         record.old_tag = _image_tag(images[0])
+    drained.append(record)
     if len(images) > 1:
         log.error(
             f"{svc.name} was running mixed images ({', '.join(images)}); "
@@ -330,15 +338,15 @@ def _drain_service(
         if not containers.stop_container(ctr_id, timeout=svc.drain):
             log.failure(f"could not stop {ctr_id[:7]}; it may still be running")
             log.service_end()
-            return 1, record
+            return 1
         if not containers.remove_container(ctr_id):
             log.failure(f"could not remove {ctr_id[:7]}")
             log.service_end()
-            return 1, record
+            return 1
 
     log.success(f"{svc.name} drained ({time.time() - svc_start:.1f}s)")
     log.service_end()
-    return 0, record
+    return 0
 
 
 def _start_service(

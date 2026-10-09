@@ -136,8 +136,11 @@ directly or through an env var that expands to it. A restore runs `compose up`
 with the previous tag in `DEPLOY_TAG`. A service whose image ignores it comes
 back on whatever the compose file names.
 
-A signal (a cancelled CI job, Ctrl-C) or an unexpected error reverts the same
-way. Further signals are ignored until the revert finishes. Drain-first services
+A signal reverts the same way, and so does an unexpected error. The signals are
+SIGTERM, Ctrl-C (SIGINT), and SIGHUP. SIGHUP is what a remote deploy receives
+when the CI job driving it over ssh is cancelled. Further signals are ignored
+until the revert finishes, and logging keeps going even if the session's output
+has gone away. Drain-first services
 already healthy on the new tag stay. Cleanup that fails along the way (a new
 container that won't stop or be removed, a scale-back that fails) also makes the
 deploy exit `3`.
