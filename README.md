@@ -114,10 +114,20 @@ The service is down from the start of its drain until phase 3. Queued work
 waits in the broker and the new worker picks it up.
 
 If the deploy fails before phase 3, drained services are restarted on the image
-tag they were running before. If a drain-first service fails its own start,
-there is no rollback: its old code would now run against whatever the rolling
-phase changed. The deploy fails, the service is left down, and an operator
-takes it from there.
+tag they were running before, at the same replica count. This includes a
+container that won't stop or be removed, which aborts the deploy before
+anything rolls.
+
+Every drain-first service is started in phase 3, even if an earlier one fails.
+If one fails its start:
+
+- When no rolling service deployed (e.g. `--service worker`), it's restored on
+  its previous tag.
+- Otherwise it's left down. Its old code would run against whatever the rolling
+  phase changed, so an operator takes it from there.
+
+Deploying rolling services with `--service` while leaving drain-first services
+out prints a warning, since those keep running old code.
 
 ```yaml
 services:
