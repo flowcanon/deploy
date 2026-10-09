@@ -2,6 +2,14 @@
 
 from dataclasses import dataclass
 
+# rolling: start the new container beside the old, health-check, then drain
+#   the old one. No downtime; old and new briefly overlap.
+# drain-first: drain the old container before anything else in the deploy
+#   rolls, and start the new one after everything else has. No overlap with
+#   new code (or new migrations); the service is down for the deploy. For
+#   queue workers and schedulers.
+STRATEGIES = ("rolling", "drain-first")
+
 
 @dataclass
 class ServiceConfig:
@@ -19,10 +27,15 @@ class ServiceConfig:
     user: str | None = None
     port: int | None = None
     dir: str | None = None
+    strategy: str = "rolling"
 
     @property
     def is_app(self) -> bool:
         return self.role == "app"
+
+    @property
+    def drains_first(self) -> bool:
+        return self.strategy == "drain-first"
 
 
 def _get_label(labels: dict, key: str, default=None):
@@ -92,6 +105,7 @@ def parse_services(compose_dict: dict) -> list[ServiceConfig]:
                 user=user,
                 port=port,
                 dir=svc_dir,
+                strategy=_get_label(labels, "deploy.strategy", "rolling"),
             )
         )
 
@@ -107,3 +121,8 @@ def validate_healthchecks(services: list[ServiceConfig]) -> list[str]:
     return [
         s.name for s in services if s.is_app and not s.has_healthcheck and not s.healthcheck_skip
     ]
+
+
+def validate_strategies(services: list[ServiceConfig]) -> list[str]:
+    """Return ``name=strategy`` for each service with an unknown deploy.strategy."""
+    return [f"{s.name}={s.strategy}" for s in services if s.strategy not in STRATEGIES]
