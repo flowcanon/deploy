@@ -130,6 +130,18 @@ Queued work waits in the broker and the new worker picks it up.
 Rolling services that already shipped earlier in the run stay deployed (see
 Deploy Ordering in SPEC.md).
 
+Restoring relies on the same contract as every deploy: each app service's image
+is tagged by `DEPLOY_TAG`, for example `image: ghcr.io/org/app:${DEPLOY_TAG}`
+directly or through an env var that expands to it. A restore runs `compose up`
+with the previous tag in `DEPLOY_TAG`. A service whose image ignores it comes
+back on whatever the compose file names.
+
+A signal (a cancelled CI job, Ctrl-C) or an unexpected error reverts the same
+way. Further signals are ignored until the revert finishes. Drain-first services
+already healthy on the new tag stay. Cleanup that fails along the way (a new
+container that won't stop or be removed, a scale-back that fails) also makes the
+deploy exit `3`.
+
 The deploy exits `1` when it failed and everything was put back. It exits `3`
 only when something couldn't be: the git restore failed, a restore's
 `compose up` failed, or the old image had no tag to restore. Even then the lock

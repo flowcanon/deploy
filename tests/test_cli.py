@@ -148,6 +148,49 @@ def test_config_with_command(mock_config, mock_env, mock_discover):
     mock_config.assert_called_once_with(cmd=["docker", "compose"])
 
 
+STATUS_COMPOSE = {
+    "services": {
+        "web": {"labels": {"deploy.role": "app"}},
+        "postgres": {"labels": {"deploy.role": "accessory"}},
+    }
+}
+
+
+@patch("flow_deploy.containers.get_container_health")
+@patch("flow_deploy.containers.get_containers_for_service")
+@patch("flow_deploy.git.current_sha")
+@patch("flow_deploy.compose.compose_config")
+def test_status_lists_each_service(mock_config, mock_sha, mock_ctrs, mock_health, capsys):
+    mock_config.return_value = STATUS_COMPOSE
+    mock_sha.return_value = "abc1234def"
+    mock_ctrs.side_effect = lambda name: (
+        [{"ID": "0123456789abcdef", "Image": "app:v1", "State": "running"}] if name == "web" else []
+    )
+    mock_health.return_value = None
+    result = CliRunner().invoke(main, ["status"])
+    assert result.exit_code == 0
+    out = capsys.readouterr().out + result.output
+    assert "Current SHA: abc1234" in out
+    assert "web (app)  0123456789ab  app:v1  running/none" in out
+    assert "postgres (accessory)  no containers" in out
+
+
+@patch("flow_deploy.git.current_sha")
+@patch("flow_deploy.compose.compose_config")
+def test_status_without_a_sha(mock_config, mock_sha, capsys):
+    mock_config.return_value = {"services": {}}
+    mock_sha.return_value = ""
+    result = CliRunner().invoke(main, ["status"])
+    assert result.exit_code == 0
+    assert "Current SHA: (none)" in capsys.readouterr().out + result.output
+
+
+@patch("flow_deploy.compose.compose_config")
+def test_status_compose_failure(mock_config):
+    mock_config.side_effect = RuntimeError("compose config failed: bad")
+    assert CliRunner().invoke(main, ["status"]).exit_code == 1
+
+
 def test_help():
     runner = CliRunner()
     result = runner.invoke(main, ["--help"])

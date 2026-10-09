@@ -61,6 +61,27 @@ def test_identify_old_new_same_tag():
     assert n["ID"] == "new1"
 
 
+def test_get_containers_filters_by_project(mock_process):
+    mock_process.responses.append(process.Result(0, "", ""))
+    get_containers_for_service("web", project="myapp")
+    _, args, _, _ = mock_process.calls[0]
+    assert "com.docker.compose.project=myapp" in " ".join(args)
+
+
+def test_identify_old_new_same_tag_newer_listed_first():
+    new = {"ID": "new1", "Image": "app:latest", "CreatedAt": "2024-01-02 00:00:00"}
+    old = {"ID": "old1", "Image": "app:latest", "CreatedAt": "2024-01-01 00:00:00"}
+    o, n = identify_old_new([new, old], "latest")
+    assert o["ID"] == "old1"
+    assert n["ID"] == "new1"
+
+
+def test_identify_old_new_indistinguishable():
+    a = {"ID": "a", "Image": "app:latest", "CreatedAt": "2024-01-01 00:00:00"}
+    b = {"ID": "b", "Image": "app:latest", "CreatedAt": "2024-01-01 00:00:00"}
+    assert identify_old_new([a, b], "latest") == (None, None)
+
+
 def test_identify_wrong_count():
     assert identify_old_new([], "v1") == (None, None)
     c = {"ID": "a", "Image": "app:v1", "CreatedAt": "2024-01-01"}

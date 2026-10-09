@@ -53,3 +53,9 @@ def test_release_no_file():
 
 def test_read_lock_no_file():
     assert read_lock() is None
+
+
+def test_read_lock_corrupt_returns_none():
+    with open(".git/deploy-lock", "w") as f:
+        f.write("{not json")
+    assert read_lock() is None

@@ -111,3 +111,13 @@ def test_error(capsys):
     error("something broke")
     err = capsys.readouterr().err
     assert "ERROR: something broke" in err
+
+
+def test_error_github_actions_annotates(capsys, monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    from flow_deploy.log import error
+
+    error("boom")
+    captured = capsys.readouterr()
+    assert "::error::boom" in captured.out
+    assert "ERROR: boom" in captured.err

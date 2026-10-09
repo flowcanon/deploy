@@ -40,3 +40,8 @@ def test_run_streaming_returns_exit_code():
 def test_run_streaming_nonzero():
     code = run_streaming(["false"])
     assert code != 0
+
+
+def test_run_streaming_with_env():
+    code = run_streaming(["sh", "-c", 'test "$TEST_VAR" = works'], env={"TEST_VAR": "works"})
+    assert code == 0
