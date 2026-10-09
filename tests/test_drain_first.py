@@ -150,18 +150,24 @@ def test_second_drain_failure_restores_the_first(mock_process, monkeypatch, tmp_
         '      deploy.order: "300"\n    healthcheck:\n      test: ["CMD", "curl"',
         1,
     )
+    sched_old = json.dumps({"ID": "old_sch_666", "Image": "ghcr.io/myorg/myapp:v1.1.0"})
     mock_process.responses.extend(
         [
             *_git_preflight(),
             _ok(two_drainers),
-            *WORKER_DRAIN,  # worker drains first (order 100)
-            _err("pull failed"),  # scheduler: pull
+            # Drains run in reverse deploy order: scheduler (300) before worker (100).
+            _ok(),  # scheduler: pull
+            _ok(sched_old + "\n"),  # scheduler: ps
+            _ok(),  # scheduler: stop
+            _ok(),  # scheduler: rm
+            _err("pull failed"),  # worker: pull
             _ok(),  # git restore
-            _err("no such image"),  # worker: restore fails, logged
+            _err("no such image"),  # scheduler: restore fails
         ]
     )
-    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 1
-    assert mock_process.calls[-1][2] == {"DEPLOY_TAG": "v1.2.0"}
+    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 3
+    assert mock_process.calls[-1][2] == {"DEPLOY_TAG": "v1.1.0"}
+    assert not (tmp_path / ".git" / "deploy-lock").exists()
 
 
 def test_drained_service_that_was_not_running_stays_stopped_on_failure(
@@ -182,7 +188,7 @@ def test_drained_service_that_was_not_running_stays_stopped_on_failure(
     assert not any("up -d --no-deps worker" in c for c in _commands(mock_process))
 
 
-def test_start_failure_leaves_service_down(mock_process, monkeypatch, tmp_path, capsys):
+def test_start_failure_restores_previous_container(mock_process, monkeypatch, tmp_path, capsys):
     _chdir(monkeypatch, tmp_path)
     # Web comes up healthy; the new worker never does.
     monkeypatch.setattr(
@@ -204,17 +210,18 @@ def test_start_failure_leaves_service_down(mock_process, monkeypatch, tmp_path, 
             _ok(),  # worker: stop unhealthy new
             _ok(),  # worker: rm unhealthy new
             _ok(),  # git restore
+            _ok(),  # worker: restore on old tag
         ]
     )
     assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 1
-    out = capsys.readouterr().out
-    assert "worker failed to start; worker down" in out
-    # The unhealthy container is gone, not left consuming.
+    assert "worker failed to start" in capsys.readouterr().out
+    # The unhealthy container is gone, not left consuming...
     cmds = _commands(mock_process)
     assert any("docker stop --time 3660 new_wrk_444" in c for c in cmds)
     assert any("docker rm new_wrk_444" in c for c in cmds)
-    # No rollback to the old tag once the rolling services shipped.
-    assert not any("v1.2.0" in str(call[2]) for call in mock_process.calls)
+    # ...and the previous one is back, even though web shipped.
+    assert mock_process.calls[-1][2] == {"DEPLOY_TAG": "v1.2.0"}
+    assert not (tmp_path / ".git" / "deploy-lock").exists()
 
 
 def test_start_compose_failure(mock_process, monkeypatch, tmp_path):
@@ -358,7 +365,7 @@ def test_mixed_old_images_are_flagged(mock_process, monkeypatch, tmp_path, capsy
     assert mock_process.calls[-1][2] == {"DEPLOY_TAG": "v1.2.0"}
 
 
-def test_failed_restore_is_reported_and_retains_the_lock(
+def test_failed_restore_exits_degraded_and_releases_the_lock(
     mock_process, monkeypatch, tmp_path, capsys
 ):
     _chdir(monkeypatch, tmp_path)
@@ -372,9 +379,9 @@ def test_failed_restore_is_reported_and_retains_the_lock(
             _err("no such image"),  # worker: restore fails
         ]
     )
-    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 1
+    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 3
     assert "drained services could not be restored" in capsys.readouterr().err
-    assert (tmp_path / ".git" / "deploy-lock").exists()
+    assert not (tmp_path / ".git" / "deploy-lock").exists()
 
 
 def test_untagged_old_image_cannot_be_restored(mock_process, monkeypatch, tmp_path, capsys):
@@ -392,7 +399,7 @@ def test_untagged_old_image_cannot_be_restored(mock_process, monkeypatch, tmp_pa
             _ok(),  # git restore
         ]
     )
-    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 1
+    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 3
     captured = capsys.readouterr()
     output = captured.out + captured.err
     assert "cannot restore worker: no tag in its previous image" in output
@@ -431,6 +438,51 @@ def test_start_failure_with_nothing_rolled_restores_old_tag(
     assert "worker failed to start" in out
 
 
+def test_drains_in_reverse_order_and_starts_in_order(mock_process, monkeypatch, tmp_path):
+    """worker (100) then scheduler (300) in deploy order: drain scheduler first,
+    start worker first, roll web in between."""
+    _chdir(monkeypatch, tmp_path)
+    ordered = COMPOSE_CONFIG_YAML + (
+        "  scheduler:\n"
+        "    image: ghcr.io/myorg/myapp:latest\n"
+        "    labels:\n"
+        "      deploy.role: app\n"
+        "      deploy.strategy: drain-first\n"
+        '      deploy.order: "300"\n'
+        "    healthcheck:\n"
+        '      test: ["CMD", "true"]\n'
+    )
+    sched_old = json.dumps({"ID": "old_sch_666", "Image": "ghcr.io/myorg/myapp:v1.2.0"})
+    sched_new = json.dumps({"ID": "new_sch_777", "Image": "ghcr.io/myorg/myapp:abc123"})
+    mock_process.responses.extend(
+        [
+            *_git_preflight(),
+            _ok(ordered),
+            _ok(),  # scheduler: pull
+            _ok(sched_old + "\n"),  # scheduler: ps
+            _ok(),  # scheduler: stop
+            _ok(),  # scheduler: rm
+            *WORKER_DRAIN,
+            *WEB_ROLL,
+            _ok(),  # worker: compose up
+            _ok(WORKER_NEW + "\n"),  # worker: ps
+            _ok("healthy\n"),  # worker: health
+            _ok(),  # scheduler: compose up
+            _ok(sched_new + "\n"),  # scheduler: ps
+            _ok("healthy\n"),  # scheduler: health
+        ]
+    )
+    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 0
+    cmds = _commands(mock_process)
+    assert (
+        _index(cmds, "docker stop", "old_sch_666")
+        < _index(cmds, "docker stop", "old_wrk_333")
+        < _index(cmds, "--scale web=2")
+        < _index(cmds, "up -d --no-deps worker")
+        < _index(cmds, "up -d --no-deps scheduler")
+    )
+
+
 def test_one_start_failure_does_not_strand_the_others(mock_process, monkeypatch, tmp_path):
     _chdir(monkeypatch, tmp_path)
     two = COMPOSE_CONFIG_YAML + (
@@ -451,11 +503,12 @@ def test_one_start_failure_does_not_strand_the_others(mock_process, monkeypatch,
         [
             *_git_preflight(),
             _ok(two),
-            *WORKER_DRAIN,
+            # Same order, so file order breaks the tie: scheduler drains first.
             _ok(),  # scheduler: pull
             _ok(sched_old + "\n"),  # scheduler: ps
             _ok(),  # scheduler: stop
             _ok(),  # scheduler: rm
+            *WORKER_DRAIN,
             _ok(),  # web: pull
             _ok(),  # web: scale to 2
             _ok(WEB_CONTAINER_OLD + "\n" + WEB_CONTAINER_NEW + "\n"),  # web: ps
@@ -469,14 +522,19 @@ def test_one_start_failure_does_not_strand_the_others(mock_process, monkeypatch,
             _ok(),  # scheduler: compose up
             _ok(sched_new + "\n"),  # scheduler: ps (healthy)
             _ok(),  # git restore
+            _ok(),  # worker: restore on old tag
         ]
     )
     assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 1
-    assert any("up -d --no-deps scheduler" in c for c in _commands(mock_process))
+    cmds = _commands(mock_process)
+    assert any("up -d --no-deps scheduler" in c for c in cmds)
+    # Only the failed worker goes back; the healthy new scheduler stays.
+    assert "--scale worker=1 worker" in cmds[-1]
+    assert mock_process.calls[-1][2] == {"DEPLOY_TAG": "v1.2.0"}
 
 
-def test_rolling_failure_after_another_shipped_leaves_drained_down(
-    mock_process, monkeypatch, tmp_path, capsys
+def test_rolling_failure_after_another_shipped_still_restores_drained(
+    mock_process, monkeypatch, tmp_path
 ):
     _chdir(monkeypatch, tmp_path)
     with_api = COMPOSE_CONFIG_YAML + (
@@ -495,13 +553,14 @@ def test_rolling_failure_after_another_shipped_leaves_drained_down(
             *WEB_ROLL,  # web ships
             _err("pull failed"),  # api: pull
             _ok(),  # git restore
+            _ok(),  # worker: restore on old tag
         ]
     )
+    # Expand-then-contract keeps the old worker compatible with whatever web
+    # migrated, so it comes back rather than leaving the queue unworked.
     assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 1
-    captured = capsys.readouterr()
-    assert "worker left down: web already deployed" in captured.out + captured.err
-    # The old worker must not come back beside the new web.
-    assert not any("v1.2.0" in str(call[2]) for call in mock_process.calls)
+    assert mock_process.calls[-1][2] == {"DEPLOY_TAG": "v1.2.0"}
+    assert not (tmp_path / ".git" / "deploy-lock").exists()
 
 
 def test_start_compose_failure_removes_partial_containers(mock_process, monkeypatch, tmp_path):

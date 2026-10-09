@@ -319,8 +319,10 @@ def test_deploy_order(mock_process, monkeypatch, tmp_path, capsys):
     assert web_pos < worker_pos
 
 
-def test_deploy_restore_failure_retains_lock(mock_process, monkeypatch, tmp_path, capsys):
-    """If git restore fails after a deploy failure, the lock should be retained."""
+def test_deploy_restore_failure_exits_degraded_and_releases_lock(
+    mock_process, monkeypatch, tmp_path, capsys
+):
+    """A failed git restore exits 3 but still releases the lock: no manual cleanup."""
     _chdir(monkeypatch, tmp_path)
     mock_process.responses.extend(
         [
@@ -333,15 +335,9 @@ def test_deploy_restore_failure_retains_lock(mock_process, monkeypatch, tmp_path
         ]
     )
     result = deploy(tag="abc123", cmd=COMPOSE_CMD)
-    assert result == 1
-    # Lock should still be held
-    from flow_deploy import lock
-
-    assert not lock.acquire(), "Lock should still be held after restore failure"
-    err = capsys.readouterr().err
-    assert "Lock retained" in err
-    # Clean up for other tests
-    lock.release()
+    assert result == 3
+    assert not (tmp_path / ".git" / "deploy-lock").exists()
+    assert "could not be fully reverted (git restore failed)" in capsys.readouterr().err
 
 
 def test_deploy_dirty_tree_fails(mock_process, monkeypatch, tmp_path, capsys):
