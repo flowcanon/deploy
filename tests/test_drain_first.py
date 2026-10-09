@@ -78,7 +78,7 @@ def test_drain_first_runs_drain_then_rolling_then_start(mock_process, monkeypatc
     cmds = _commands(mock_process)
     drain = _index(cmds, "docker stop", "--time 3660", "old_wrk_333")
     roll = _index(cmds, "--scale web=2")
-    start = _index(cmds, "up -d --no-deps worker")
+    start = _index(cmds, "--scale worker=1 worker")
     assert drain < roll < start
     # The worker never scales to 2: no overlap of old and new.
     assert not any("--scale worker=2" in c for c in cmds)
@@ -185,7 +185,7 @@ def test_drained_service_that_was_not_running_stays_stopped_on_failure(
         ]
     )
     assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 1
-    assert not any("up -d --no-deps worker" in c for c in _commands(mock_process))
+    assert not any("--scale worker=1 worker" in c for c in _commands(mock_process))
 
 
 def test_start_failure_restores_previous_container(mock_process, monkeypatch, tmp_path, capsys):
@@ -478,8 +478,8 @@ def test_drains_in_reverse_order_and_starts_in_order(mock_process, monkeypatch, 
         _index(cmds, "docker stop", "old_sch_666")
         < _index(cmds, "docker stop", "old_wrk_333")
         < _index(cmds, "--scale web=2")
-        < _index(cmds, "up -d --no-deps worker")
-        < _index(cmds, "up -d --no-deps scheduler")
+        < _index(cmds, "--scale worker=1 worker")
+        < _index(cmds, "--scale scheduler=1 scheduler")
     )
 
 
@@ -527,7 +527,7 @@ def test_one_start_failure_does_not_strand_the_others(mock_process, monkeypatch,
     )
     assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 1
     cmds = _commands(mock_process)
-    assert any("up -d --no-deps scheduler" in c for c in cmds)
+    assert any("--scale scheduler=1 scheduler" in c for c in cmds)
     # Only the failed worker goes back; the healthy new scheduler stays.
     assert "--scale worker=1 worker" in cmds[-1]
     assert mock_process.calls[-1][2] == {"DEPLOY_TAG": "v1.2.0"}

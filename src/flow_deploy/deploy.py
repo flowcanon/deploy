@@ -2,7 +2,7 @@
 
 import signal
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from flow_deploy import compose, config, containers, git, lock, log
 
@@ -10,6 +10,62 @@ EXIT_OK = 0
 EXIT_FAILED = 1  # failed; everything it touched was put back
 EXIT_LOCKED = 2
 EXIT_DEGRADED = 3  # failed, and something couldn't be put back
+
+# Per-service outcomes from _deploy_service and _start_service.
+SVC_OK = 0
+SVC_FAILED = 1  # failed, and its own cleanup succeeded
+SVC_DIRTY = 2  # failed, and its own cleanup failed too
+
+
+class Interrupted(BaseException):
+    """Raised by the signal handler so the deploy reverts before exiting.
+
+    A BaseException, so no ``except Exception`` along the way swallows it.
+    """
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+
+
+@dataclass
+class Drained:
+    """What a drain-first service was running before its drain."""
+
+    svc: config.ServiceConfig
+    replicas: int = 0
+    old_tag: str | None = None
+    old_image: str = ""
+
+
+@dataclass
+class _Run:
+    """What a deploy has changed so far, so any failure can put it back."""
+
+    compose_cmd: list[str]
+    previous_sha: str | None = None
+    drained: list[Drained] = field(default_factory=list)
+    started: set[str] = field(default_factory=set)  # drain-first, healthy on the new tag
+
+    def revert(self, reason: str, down: list[Drained] | None = None) -> int:
+        """Put things back as they were before the deploy.
+
+        Restores the repo and brings ``down`` (by default every drained
+        service not yet healthy on the new tag) back on the tags they ran.
+        Expand-then-contract migrations keep old code compatible with the new
+        schema, as rolling deploys already assume. Exits 3 only when
+        something can't be put back.
+        """
+        if down is None:
+            down = [r for r in self.drained if r.svc.name not in self.started]
+        log.info("")
+        problems = []
+        if self.previous_sha is not None and not git.restore(self.previous_sha):
+            problems.append("git restore failed")
+        if not _restore_drained(down, self.compose_cmd):
+            problems.append("drained services could not be restored")
+        log.footer(f"FAILED ({reason})")
+        return _degraded(", ".join(problems)) if problems else EXIT_FAILED
 
 
 def deploy(
@@ -47,104 +103,29 @@ def deploy(
         log.error(f"Deploy lock held by PID {pid}")
         return EXIT_LOCKED
 
-    # Register signal handlers for cleanup
+    # A signal (a cancelled CI job, Ctrl-C) reverts like any other failure.
     _original_sigterm = signal.getsignal(signal.SIGTERM)
     _original_sigint = signal.getsignal(signal.SIGINT)
 
-    def _cleanup_handler(signum, frame):
-        log.error(f"Received signal {signum}, cleaning up...")
-        lock.release()
-        raise SystemExit(1)
+    def _interrupt(signum, frame):
+        raise Interrupted(signum)
 
-    signal.signal(signal.SIGTERM, _cleanup_handler)
-    signal.signal(signal.SIGINT, _cleanup_handler)
+    signal.signal(signal.SIGTERM, _interrupt)
+    signal.signal(signal.SIGINT, _interrupt)
 
+    run = _Run(compose_cmd)
     try:
-        # Git pre-flight: dirty check, fetch, checkout detached.
-        # Protected by the lock so concurrent deploys can't race on checkout.
-        # Must happen before config parsing so we read the compose file
-        # from the target commit, not whatever is currently checked out.
-        git_code, previous_sha = git.preflight_and_checkout(tag if tag_provided else None)
-        if git_code != 0:
-            return EXIT_FAILED
-
-        # Parse compose config (now reading from the target commit)
-        try:
-            compose_dict = compose.compose_config(cmd=compose_cmd)
-        except RuntimeError as e:
-            log.error(str(e))
-            return EXIT_FAILED if git.restore(previous_sha) else _degraded("git restore failed")
-
-        app_services = _resolve_app_services(compose_dict, services_filter)
-        if app_services is None:
-            return EXIT_FAILED if git.restore(previous_sha) else _degraded("git restore failed")
-
-        service_names = ", ".join(s.name for s in app_services)
-        log.header("deploy")
-        log.info(f"tag: {tag}")
-        log.info(f"services: {service_names}")
-        log.info("")
-
-        project = compose_dict.get("name", "")
-        start_time = time.time()
-
-        # app_services is in deploy.order. Services start in that order and
-        # stop in reverse, so a worker comes up after the web and API it
-        # depends on, and drains before them.
-        drain_first = [s for s in app_services if s.drains_first]
-        rolling = [s for s in app_services if not s.drains_first]
-
-        def abort(down: list[Drained], reason: str) -> int:
-            """Put things back as they were before the deploy.
-
-            Restores the repo and brings ``down`` back on the tags they ran.
-            Expand-then-contract migrations keep old code compatible with the
-            new schema, as rolling deploys already assume. Exits 3 only when
-            something can't be put back.
-            """
-            log.info("")
-            problems = []
-            if not git.restore(previous_sha):
-                problems.append("git restore failed")
-            if not _restore_drained(down, compose_cmd):
-                problems.append("drained services could not be restored")
-            log.footer(f"FAILED ({reason})")
-            return _degraded(", ".join(problems)) if problems else EXIT_FAILED
-
-        # Phase 1: drain-first services stop, in reverse deploy order, before
-        # anything rolls, so none of their old code runs beside new code.
-        # What each one was running is kept to bring it back on failure.
-        drained: list[Drained] = []
-        for svc in reversed(drain_first):
-            result, record = _drain_service(svc, tag, compose_cmd, project=project)
-            if record is not None:
-                drained.append(record)
-            if result != 0:
-                return abort(drained, "deploy aborted")
-
-        # Phase 2: rolling services, in deploy order, as before.
-        for svc in rolling:
-            if _deploy_service(svc, tag, compose_cmd, project=project) != 0:
-                return abort(drained, "deploy aborted")
-
-        # Phase 3: drain-first services start in deploy order. Every one is
-        # attempted, so one failure doesn't strand the rest; a failed one goes
-        # back to what it ran before.
-        by_name = {record.svc.name: record for record in drained}
-        failed = [
-            by_name[svc.name]
-            for svc in drain_first
-            if _start_service(svc, tag, compose_cmd, project=project) != 0
-        ]
-        if failed:
-            names = ", ".join(r.svc.name for r in failed)
-            return abort(failed, f"{names} failed to start")
-
-        elapsed = time.time() - start_time
-
-        log.info("")
-        log.info(f"HEAD detached at {tag}")
-        log.footer(f"complete ({elapsed:.1f}s)")
+        return _deploy_locked(run, tag, tag_provided, services_filter)
+    except (Exception, Interrupted) as exc:
+        # Don't let a second signal cut the revert short.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        if isinstance(exc, Interrupted):
+            reason = f"interrupted by signal {exc.signum}"
+        else:
+            reason = f"unexpected error: {exc!r}"
+        log.error(f"{reason}; reverting")
+        return run.revert(reason)
     finally:
         # Always released: a failed deploy puts things back rather than
         # leaving state for someone to clean up by hand.
@@ -152,6 +133,94 @@ def deploy(
         signal.signal(signal.SIGTERM, _original_sigterm)
         signal.signal(signal.SIGINT, _original_sigint)
 
+
+def _deploy_locked(
+    run: _Run, tag: str, tag_provided: bool, services_filter: list[str] | None
+) -> int:
+    """The deploy proper, under the lock. Records what it changes on ``run``."""
+    # Git pre-flight: dirty check, fetch, checkout detached.
+    # Protected by the lock so concurrent deploys can't race on checkout.
+    # Must happen before config parsing so we read the compose file
+    # from the target commit, not whatever is currently checked out.
+    git_code, run.previous_sha = git.preflight_and_checkout(tag if tag_provided else None)
+    if git_code != 0:
+        return EXIT_FAILED
+
+    # Parse compose config (now reading from the target commit)
+    try:
+        compose_dict = compose.compose_config(cmd=run.compose_cmd)
+    except RuntimeError as e:
+        log.error(str(e))
+        return EXIT_FAILED if git.restore(run.previous_sha) else _degraded("git restore failed")
+
+    app_services = _resolve_app_services(compose_dict, services_filter)
+    if app_services is None:
+        return EXIT_FAILED if git.restore(run.previous_sha) else _degraded("git restore failed")
+
+    service_names = ", ".join(s.name for s in app_services)
+    log.header("deploy")
+    log.info(f"tag: {tag}")
+    log.info(f"services: {service_names}")
+    log.info("")
+
+    project = compose_dict.get("name", "")
+    compose_cmd = run.compose_cmd
+    start_time = time.time()
+
+    # app_services is in deploy.order. Services start in that order and stop
+    # in reverse, so a worker comes up after the web and API it depends on,
+    # and drains before them.
+    drain_first = [s for s in app_services if s.drains_first]
+    rolling = [s for s in app_services if not s.drains_first]
+    dirty = []  # services whose own failure cleanup also failed
+
+    def failed(reason: str, down: list[Drained] | None = None) -> int:
+        code = run.revert(reason, down)
+        if dirty and code == EXIT_FAILED:
+            return _degraded(f"cleanup failed for {', '.join(dirty)}")
+        return code
+
+    # Phase 1: drain-first services stop, in reverse deploy order, before
+    # anything rolls, so none of their old code runs beside new code. What
+    # each one was running is kept to bring it back on failure.
+    for svc in reversed(drain_first):
+        result, record = _drain_service(svc, tag, compose_cmd, project=project)
+        if record is not None:
+            run.drained.append(record)
+        if result != 0:
+            return failed("deploy aborted")
+
+    # Phase 2: rolling services, in deploy order, as before.
+    for svc in rolling:
+        result = _deploy_service(svc, tag, compose_cmd, project=project)
+        if result == SVC_DIRTY:
+            dirty.append(svc.name)
+        if result != SVC_OK:
+            return failed("deploy aborted")
+
+    # Phase 3: drain-first services start in deploy order, at the replica
+    # count they ran. Every one is attempted, so one failure doesn't strand
+    # the rest; a failed one goes back to what it ran before.
+    by_name = {record.svc.name: record for record in run.drained}
+    failures = []
+    for svc in drain_first:
+        record = by_name[svc.name]
+        result = _start_service(svc, tag, compose_cmd, max(record.replicas, 1), project=project)
+        if result == SVC_OK:
+            run.started.add(svc.name)
+            continue
+        if result == SVC_DIRTY:
+            dirty.append(svc.name)
+        failures.append(record)
+    if failures:
+        names = ", ".join(r.svc.name for r in failures)
+        return failed(f"{names} failed to start", failures)
+
+    elapsed = time.time() - start_time
+
+    log.info("")
+    log.info(f"HEAD detached at {tag}")
+    log.footer(f"complete ({elapsed:.1f}s)")
     return EXIT_OK
 
 
@@ -213,19 +282,14 @@ def _pull(svc: config.ServiceConfig, env: dict, compose_cmd: list[str]) -> bool:
 
 
 def _image_tag(image: str) -> str | None:
-    """The tag of ``registry/name:tag[@digest]``, or None when there's no tag."""
+    """The tag of ``registry/name:tag[@digest]``, or None when there's no tag.
+
+    A bare image ID (``sha256:...``) has no tag.
+    """
+    if image.startswith("sha256:"):
+        return None
     name = image.rsplit("/", 1)[-1].split("@", 1)[0]
     return name.rsplit(":", 1)[1] if ":" in name else None
-
-
-@dataclass
-class Drained:
-    """What a drain-first service was running before its drain."""
-
-    svc: config.ServiceConfig
-    replicas: int = 0
-    old_tag: str | None = None
-    old_image: str = ""
 
 
 def _drain_service(
@@ -278,43 +342,64 @@ def _drain_service(
 
 
 def _start_service(
-    svc: config.ServiceConfig, tag: str, compose_cmd: list[str], project: str = ""
+    svc: config.ServiceConfig,
+    tag: str,
+    compose_cmd: list[str],
+    replicas: int = 1,
+    project: str = "",
 ) -> int:
-    """Start a drained service on the new tag and wait for it to be healthy."""
+    """Start a drained service on the new tag at ``replicas`` and wait for health.
+
+    Returns SVC_OK, or SVC_FAILED / SVC_DIRTY after removing what it started
+    (DIRTY when that removal itself failed).
+    """
     log.service_start(svc.name)
     svc_start = time.time()
     env = {"DEPLOY_TAG": tag}
 
-    log.step("starting new container...")
-    result = compose.compose_run(["up", "-d", "--no-deps", svc.name], env=env, cmd=compose_cmd)
-    ctrs = containers.get_containers_for_service(svc.name, project=project)
-    if result.returncode != 0 or len(ctrs) != 1:
-        log.failure(f"start failed: {result.stderr.strip() or f'{len(ctrs)} containers'}")
-        _remove_all(ctrs, timeout=svc.drain)
+    def fail(msg: str, ctrs: list[dict]) -> int:
+        # Remove what started: an unhealthy worker may still be consuming,
+        # and a restore on an unchanged config would otherwise reuse it.
+        log.failure(msg)
+        clean = _remove_all(ctrs, timeout=svc.drain)
         log.service_end()
-        return 1
+        return SVC_FAILED if clean else SVC_DIRTY
+
+    log.step(f"starting {replicas} new container(s)...")
+    result = compose.compose_run(
+        ["up", "-d", "--no-deps", "--scale", f"{svc.name}={replicas}", svc.name],
+        env=env,
+        cmd=compose_cmd,
+    )
+    ctrs = containers.get_containers_for_service(svc.name, project=project)
+    if result.returncode != 0 or len(ctrs) != replicas:
+        detail = result.stderr.strip() or f"{len(ctrs)} of {replicas} containers running"
+        return fail(f"start failed: {detail}", ctrs)
 
     if svc.healthcheck_skip:
         log.step("healthcheck skipped (deploy.healthcheck.skip=true)")
     else:
         log.step(f"waiting for health check (timeout: {svc.healthcheck_timeout}s)...")
-        if not _wait_for_healthy(ctrs[0]["ID"], svc.healthcheck_timeout, svc.healthcheck_poll):
-            # Remove it: an unhealthy worker may still be consuming, and a
-            # restore on an unchanged config would otherwise reuse it.
-            log.failure(f"{svc.name} unhealthy; stopping and removing it")
-            _remove_all(ctrs, timeout=svc.drain)
-            log.service_end()
-            return 1
+        for ctr in ctrs:
+            if not _wait_for_healthy(ctr["ID"], svc.healthcheck_timeout, svc.healthcheck_poll):
+                return fail(f"{svc.name} unhealthy; stopping and removing it", ctrs)
 
     log.success(f"{svc.name} started ({time.time() - svc_start:.1f}s)")
     log.service_end()
-    return 0
+    return SVC_OK
 
 
-def _remove_all(ctrs: list[dict], timeout: int) -> None:
+def _remove_all(ctrs: list[dict], timeout: int) -> bool:
+    """Stop and remove ``ctrs``. Returns False if any couldn't be."""
+    ok = True
     for ctr in ctrs:
-        containers.stop_container(ctr["ID"], timeout=timeout)
-        containers.remove_container(ctr["ID"])
+        if not containers.stop_container(ctr["ID"], timeout=timeout):
+            log.failure(f"could not stop {ctr['ID'][:7]}")
+            ok = False
+        if not containers.remove_container(ctr["ID"]):
+            log.failure(f"could not remove {ctr['ID'][:7]}")
+            ok = False
+    return ok
 
 
 def _restore_drained(drained: list[Drained], compose_cmd: list[str]) -> bool:
@@ -350,16 +435,23 @@ def _restore_drained(drained: list[Drained], compose_cmd: list[str]) -> bool:
 def _deploy_service(
     svc: config.ServiceConfig, tag: str, compose_cmd: list[str], project: str = ""
 ) -> int:
-    """Deploy a single service. Returns 0 on success, 1 on failure."""
+    """Deploy a single service with a rolling cutover.
+
+    Returns SVC_OK, SVC_FAILED (old container still serving, nothing left
+    behind), or SVC_DIRTY (failed, and cleaning up after itself failed too).
+    """
     log.service_start(svc.name)
     svc_start = time.time()
 
     env = {"DEPLOY_TAG": tag}
 
+    def end(code: int) -> int:
+        log.service_end()
+        return code
+
     # 1. Pull
     if not _pull(svc, env, compose_cmd):
-        log.service_end()
-        return 1
+        return end(SVC_FAILED)
 
     # 2. Scale to 2
     log.step("starting new container...")
@@ -370,8 +462,7 @@ def _deploy_service(
     )
     if result.returncode != 0:
         log.failure(f"scale up failed: {result.stderr.strip()}")
-        log.service_end()
-        return 1
+        return end(SVC_FAILED if _scale_back(svc.name, env, compose_cmd) else SVC_DIRTY)
 
     # 3. Get containers, identify old vs new
     ctrs = containers.get_containers_for_service(svc.name, project=project)
@@ -382,16 +473,12 @@ def _deploy_service(
             f"Run `docker ps --filter label=com.docker.compose.service={svc.name}` "
             "to inspect running containers, then remove extras and retry."
         )
-        _scale_back(svc.name, env, compose_cmd)
-        log.service_end()
-        return 1
+        return end(SVC_FAILED if _scale_back(svc.name, env, compose_cmd) else SVC_DIRTY)
 
     old, new = containers.identify_old_new(ctrs, tag)
     if old is None or new is None:
         log.failure("Could not identify old/new containers")
-        _scale_back(svc.name, env, compose_cmd)
-        log.service_end()
-        return 1
+        return end(SVC_FAILED if _scale_back(svc.name, env, compose_cmd) else SVC_DIRTY)
 
     new_id = new["ID"]
     old_id = old["ID"]
@@ -411,24 +498,29 @@ def _deploy_service(
 
         # 5a. Cutover: stop old, remove old, scale back
         log.step(f"draining old container ({old_id[:7]}, {svc.drain}s timeout)...")
-        containers.stop_container(old_id, timeout=svc.drain)
-        containers.remove_container(old_id)
-        _scale_back(svc.name, env, compose_cmd)
+        clean = containers.stop_container(old_id, timeout=svc.drain)
+        clean = containers.remove_container(old_id) and clean
+        clean = _scale_back(svc.name, env, compose_cmd) and clean
+        if not clean:
+            # The new container is serving, but the old one may be too.
+            log.failure(f"{svc.name} cutover incomplete: old container {old_id[:7]} remains")
+            return end(SVC_DIRTY)
 
         elapsed = time.time() - svc_start
         log.success(f"{svc.name} deployed ({elapsed:.1f}s)")
-        log.service_end()
-        return 0
+        return end(SVC_OK)
     else:
         # 5b. Abort: stop new, remove new, scale back
         log.step(f"aborting: stopping new container ({new_id[:7]})...")
-        containers.stop_container(new_id)
-        containers.remove_container(new_id)
-        _scale_back(svc.name, env, compose_cmd)
-        log.step("aborted, old container still serving")
+        clean = containers.stop_container(new_id)
+        clean = containers.remove_container(new_id) and clean
+        clean = _scale_back(svc.name, env, compose_cmd) and clean
+        if clean:
+            log.step("aborted, old container still serving")
+        else:
+            log.step(f"abort incomplete: new container {new_id[:7]} may still be running")
         log.failure(f"{svc.name} FAILED")
-        log.service_end()
-        return 1
+        return end(SVC_FAILED if clean else SVC_DIRTY)
 
 
 def _wait_for_healthy(container_id: str, timeout: int, poll_interval: int) -> bool:
@@ -444,13 +536,17 @@ def _wait_for_healthy(container_id: str, timeout: int, poll_interval: int) -> bo
     return False
 
 
-def _scale_back(service_name: str, env: dict, compose_cmd: list[str]) -> None:
-    """Scale service back to 1."""
-    compose.compose_run(
+def _scale_back(service_name: str, env: dict, compose_cmd: list[str]) -> bool:
+    """Scale service back to 1. Returns False if compose failed."""
+    result = compose.compose_run(
         ["up", "-d", "--no-deps", "--scale", f"{service_name}=1", service_name],
         env=env,
         cmd=compose_cmd,
     )
+    if result.returncode != 0:
+        log.failure(f"scale back failed: {result.stderr.strip()}")
+        return False
+    return True
 
 
 def _dry_run(tag: str, services: list[config.ServiceConfig]) -> None:
