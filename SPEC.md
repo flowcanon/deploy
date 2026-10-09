@@ -296,8 +296,9 @@ flow-deploy deploy [--tag TAG] [--service SERVICE] [--dry-run]
 
 Exit codes:
 - `0` — all services deployed successfully
-- `1` — deploy failed (dirty tree, git error, unhealthy service, etc.)
+- `1` — deploy failed (dirty tree, git error, unhealthy service, etc.) and everything it touched was put back
 - `2` — deploy lock held by another process
+- `3` — deploy failed and could not be fully reverted (git restore or a service restore failed); the lock is still released
 
 To deploy a previous version, run `flow-deploy deploy --tag <previous-sha>`. The SHA is always a git commit — find it in your CI history or via `git log` on the server.
 

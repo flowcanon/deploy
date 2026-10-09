@@ -101,29 +101,39 @@ migrated the database.
 Label those services `deploy.strategy: drain-first` and the deploy runs in three
 phases:
 
-1. **Drain.** Each drain-first service, in `deploy.order`, pulls its new image
-   and then stops its running containers. Stopping is `docker stop --time
-   <deploy.drain>`: SIGTERM first, so Celery-style workers finish their current
-   tasks and stop taking new ones, then SIGKILL when the drain expires. Nothing
-   rolls until every drain has finished.
-2. **Roll.** Every rolling service deploys as usual.
-3. **Start.** Each drain-first service starts on the new tag and must pass its
-   health check.
+1. **Drain.** Drain-first services stop in *reverse* `deploy.order`. Each one
+   pulls its new image, then stops its running containers. Stopping is
+   `docker stop --time <deploy.drain>`: SIGTERM first, so Celery-style workers
+   finish their current tasks and stop taking new ones, then SIGKILL when the
+   drain expires. Nothing rolls until every drain has finished.
+2. **Roll.** Rolling services deploy in `deploy.order`, as usual.
+3. **Start.** Drain-first services start in `deploy.order` on the new tag, and
+   each must pass its health check.
 
-The service is down from the start of its drain until phase 3. Queued work
-waits in the broker and the new worker picks it up.
+So with `web` (100), `api` (200) and `worker` (300), the worker drains first,
+then web and api roll, then the worker starts last, after the services it
+depends on. The worker is down from the start of its drain until phase 3.
+Queued work waits in the broker and the new worker picks it up.
 
-On failure, one rule decides what happens to drained services. Phase 3 still
-starts every drain-first service even if an earlier one fails, and a failed
-start's container is stopped and removed.
+**A failed deploy leaves no trace.** It doesn't need manual cleanup:
 
-- **No rolling service has deployed yet.** This covers a drain that fails,
-  including a container that won't stop or be removed, and a failure at the
-  first rolling service. It also covers `--service worker`. Drained services
-  come back on the image tag they were running, at the same replica count.
-- **A rolling service has deployed.** Drained services, and any that failed to
-  start, are left down. Their old code would run beside the new services and
-  against any migration they ran, so an operator starts them on a fixed tag.
+- A rolling service that fails is reverted as always: the old container keeps
+  serving and the new one is removed.
+- Every drained service comes back on the image tag it was running, at the same
+  replica count, in `deploy.order`. That holds whatever failed, including a
+  container that wouldn't stop and a drain-first service that failed its own
+  start. Phase 3 attempts every start, removes any that fail, and restores only
+  those. This relies on the same expand-then-contract migration discipline as
+  rolling deploys: old code keeps working against the new schema.
+- The repo goes back to the previous commit, and the lock is released.
+
+Rolling services that already shipped earlier in the run stay deployed (see
+Deploy Ordering in SPEC.md).
+
+The deploy exits `1` when it failed and everything was put back. It exits `3`
+only when something couldn't be: the git restore failed, a restore's
+`compose up` failed, or the old image had no tag to restore. Even then the lock
+is released. Exit `3` is the signal that someone needs to look.
 
 Deploying rolling services with `--service` while leaving drain-first services
 out prints a warning, since those keep running old code.

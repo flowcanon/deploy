@@ -6,6 +6,11 @@ from dataclasses import dataclass
 
 from flow_deploy import compose, config, containers, git, lock, log
 
+EXIT_OK = 0
+EXIT_FAILED = 1  # failed; everything it touched was put back
+EXIT_LOCKED = 2
+EXIT_DEGRADED = 3  # failed, and something couldn't be put back
+
 
 def deploy(
     tag: str | None = None,
@@ -13,7 +18,8 @@ def deploy(
     dry_run: bool = False,
     cmd: list[str] | None = None,
 ) -> int:
-    """Perform a rolling deploy. Returns exit code (0=success, 1=failure, 2=locked)."""
+    """Perform a deploy. Returns an EXIT_* code: 0 ok, 1 failed and reverted,
+    2 locked, 3 failed and not fully reverted."""
     compose_cmd = cmd or compose.resolve_command()
 
     # Determine tag: if not provided, deploy whatever is currently checked out
@@ -39,7 +45,7 @@ def deploy(
         lock_info = lock.read_lock()
         pid = lock_info["pid"] if lock_info else "unknown"
         log.error(f"Deploy lock held by PID {pid}")
-        return 2
+        return EXIT_LOCKED
 
     # Register signal handlers for cleanup
     _original_sigterm = signal.getsignal(signal.SIGTERM)
@@ -53,8 +59,6 @@ def deploy(
     signal.signal(signal.SIGTERM, _cleanup_handler)
     signal.signal(signal.SIGINT, _cleanup_handler)
 
-    keep_lock = False
-    lock_reason = "git restore failed"
     try:
         # Git pre-flight: dirty check, fetch, checkout detached.
         # Protected by the lock so concurrent deploys can't race on checkout.
@@ -62,20 +66,18 @@ def deploy(
         # from the target commit, not whatever is currently checked out.
         git_code, previous_sha = git.preflight_and_checkout(tag if tag_provided else None)
         if git_code != 0:
-            return 1
+            return EXIT_FAILED
 
         # Parse compose config (now reading from the target commit)
         try:
             compose_dict = compose.compose_config(cmd=compose_cmd)
         except RuntimeError as e:
             log.error(str(e))
-            keep_lock = not git.restore(previous_sha)
-            return 1
+            return EXIT_FAILED if git.restore(previous_sha) else _degraded("git restore failed")
 
         app_services = _resolve_app_services(compose_dict, services_filter)
         if app_services is None:
-            keep_lock = not git.restore(previous_sha)
-            return 1
+            return EXIT_FAILED if git.restore(previous_sha) else _degraded("git restore failed")
 
         service_names = ", ".join(s.name for s in app_services)
         log.header("deploy")
@@ -86,59 +88,53 @@ def deploy(
         project = compose_dict.get("name", "")
         start_time = time.time()
 
+        # app_services is in deploy.order. Services start in that order and
+        # stop in reverse, so a worker comes up after the web and API it
+        # depends on, and drains before them.
         drain_first = [s for s in app_services if s.drains_first]
         rolling = [s for s in app_services if not s.drains_first]
 
-        shipped = []  # rolling services that deployed in this run
+        def abort(down: list[Drained], reason: str) -> int:
+            """Put things back as they were before the deploy.
 
-        def abort(down, reason):
-            """Restore the repo; bring ``down`` back on their old tags if safe.
-
-            Safe only while no rolling service has shipped. Once one has, old
-            drain-first code would run beside it (and against any migration
-            it ran), so those services stay down for an operator.
+            Restores the repo and brings ``down`` back on the tags they ran.
+            Expand-then-contract migrations keep old code compatible with the
+            new schema, as rolling deploys already assume. Exits 3 only when
+            something can't be put back.
             """
-            nonlocal keep_lock, lock_reason
             log.info("")
+            problems = []
             if not git.restore(previous_sha):
-                keep_lock, lock_reason = True, "git restore failed"
-            names = ", ".join(r.svc.name for r in down if r.replicas or r in failed)
-            if shipped and names:
-                log.failure(
-                    f"{names} left down: {', '.join(shipped)} already deployed, so their "
-                    "old code can't run safely; start them on a fixed tag"
-                )
-                reason = f"{reason}; {names} down"
-            elif not _restore_drained(down, compose_cmd):
-                keep_lock, lock_reason = True, "drained services could not be restored"
+                problems.append("git restore failed")
+            if not _restore_drained(down, compose_cmd):
+                problems.append("drained services could not be restored")
             log.footer(f"FAILED ({reason})")
-            return 1
+            return _degraded(", ".join(problems)) if problems else EXIT_FAILED
 
-        # Phase 1: drain-first services stop before anything rolls, so none of
-        # their old code runs beside new code or after new migrations. What
-        # each one was running is kept to bring it back if the deploy fails.
+        # Phase 1: drain-first services stop, in reverse deploy order, before
+        # anything rolls, so none of their old code runs beside new code.
+        # What each one was running is kept to bring it back on failure.
         drained: list[Drained] = []
-        failed: list[Drained] = []
-        for svc in drain_first:
+        for svc in reversed(drain_first):
             result, record = _drain_service(svc, tag, compose_cmd, project=project)
             if record is not None:
                 drained.append(record)
             if result != 0:
                 return abort(drained, "deploy aborted")
 
-        # Phase 2: rolling services, as before.
+        # Phase 2: rolling services, in deploy order, as before.
         for svc in rolling:
-            result = _deploy_service(svc, tag, compose_cmd, project=project)
-            if result != 0:
+            if _deploy_service(svc, tag, compose_cmd, project=project) != 0:
                 return abort(drained, "deploy aborted")
-            shipped.append(svc.name)
 
-        # Phase 3: drain-first services start on the new tag. Every one is
-        # attempted, so one failure doesn't strand the rest.
+        # Phase 3: drain-first services start in deploy order. Every one is
+        # attempted, so one failure doesn't strand the rest; a failed one goes
+        # back to what it ran before.
+        by_name = {record.svc.name: record for record in drained}
         failed = [
-            record
-            for record in drained
-            if _start_service(record.svc, tag, compose_cmd, project=project) != 0
+            by_name[svc.name]
+            for svc in drain_first
+            if _start_service(svc, tag, compose_cmd, project=project) != 0
         ]
         if failed:
             names = ", ".join(r.svc.name for r in failed)
@@ -150,17 +146,21 @@ def deploy(
         log.info(f"HEAD detached at {tag}")
         log.footer(f"complete ({elapsed:.1f}s)")
     finally:
-        if keep_lock:
-            log.error(
-                f"Lock retained — {lock_reason}, manual intervention required. "
-                "Fix the repo checkout and service state, then: rm .git/deploy-lock"
-            )
-        else:
-            lock.release()
+        # Always released: a failed deploy puts things back rather than
+        # leaving state for someone to clean up by hand.
+        lock.release()
         signal.signal(signal.SIGTERM, _original_sigterm)
         signal.signal(signal.SIGINT, _original_sigint)
 
-    return 0
+    return EXIT_OK
+
+
+def _degraded(problem: str) -> int:
+    log.error(
+        f"Deploy failed and could not be fully reverted ({problem}). "
+        "Check the repo checkout and service state on this host."
+    )
+    return EXIT_DEGRADED
 
 
 def _resolve_app_services(
@@ -318,9 +318,12 @@ def _remove_all(ctrs: list[dict], timeout: int) -> None:
 
 
 def _restore_drained(drained: list[Drained], compose_cmd: list[str]) -> bool:
-    """Bring drained services back as they were. Returns False if any couldn't be."""
+    """Bring drained services back as they were, in deploy (start) order.
+
+    Returns False if any couldn't be.
+    """
     ok = True
-    for record in drained:
+    for record in sorted(drained, key=lambda r: (r.svc.order, r.svc.file_order)):
         name = record.svc.name
         if not record.replicas:
             log.step(f"{name} was not running before the deploy; leaving it stopped")
@@ -457,7 +460,7 @@ def _dry_run(tag: str, services: list[config.ServiceConfig]) -> None:
     log.info(f"services: {', '.join(s.name for s in services)}")
     log.info("")
     drain_first = [s for s in services if s.drains_first]
-    for svc in drain_first:
+    for svc in reversed(drain_first):
         log.service_start(svc.name)
         image_name = (svc.image or svc.name).rsplit(":", 1)[0]
         log.step(f"would pull {image_name}:{tag}")
