@@ -201,12 +201,18 @@ def test_start_failure_leaves_service_down(mock_process, monkeypatch, tmp_path, 
             _ok(),  # web: scale back to 1
             _ok(),  # worker: compose up
             _ok(WORKER_NEW + "\n"),  # worker: docker ps
+            _ok(),  # worker: stop unhealthy new
+            _ok(),  # worker: rm unhealthy new
             _ok(),  # git restore
         ]
     )
     assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 1
     out = capsys.readouterr().out
-    assert "worker down; rolling services deployed" in out
+    assert "worker failed to start; worker down" in out
+    # The unhealthy container is gone, not left consuming.
+    cmds = _commands(mock_process)
+    assert any("docker stop --time 3660 new_wrk_444" in c for c in cmds)
+    assert any("docker rm new_wrk_444" in c for c in cmds)
     # No rollback to the old tag once the rolling services shipped.
     assert not any("v1.2.0" in str(call[2]) for call in mock_process.calls)
 
@@ -412,13 +418,17 @@ def test_start_failure_with_nothing_rolled_restores_old_tag(
             *WORKER_DRAIN,
             _ok(),  # worker: compose up (new tag)
             _ok(WORKER_NEW + "\n"),  # worker: docker ps
+            _ok(),  # worker: stop unhealthy new
+            _ok(),  # worker: rm unhealthy new
             _ok(),  # git restore
             _ok(),  # worker: restore on old tag
         ]
     )
     assert deploy(tag="abc123", services_filter=["worker"], cmd=COMPOSE_CMD) == 1
     assert mock_process.calls[-1][2] == {"DEPLOY_TAG": "v1.2.0"}
-    assert "worker restored on previous tag" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "restoring worker on v1.2.0" in out
+    assert "worker failed to start" in out
 
 
 def test_one_start_failure_does_not_strand_the_others(mock_process, monkeypatch, tmp_path):
@@ -454,6 +464,8 @@ def test_one_start_failure_does_not_strand_the_others(mock_process, monkeypatch,
             _ok(),  # web: scale back
             _ok(),  # worker: compose up
             _ok(WORKER_NEW + "\n"),  # worker: ps (then unhealthy)
+            _ok(),  # worker: stop unhealthy new
+            _ok(),  # worker: rm unhealthy new
             _ok(),  # scheduler: compose up
             _ok(sched_new + "\n"),  # scheduler: ps (healthy)
             _ok(),  # git restore
@@ -461,6 +473,54 @@ def test_one_start_failure_does_not_strand_the_others(mock_process, monkeypatch,
     )
     assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 1
     assert any("up -d --no-deps scheduler" in c for c in _commands(mock_process))
+
+
+def test_rolling_failure_after_another_shipped_leaves_drained_down(
+    mock_process, monkeypatch, tmp_path, capsys
+):
+    _chdir(monkeypatch, tmp_path)
+    with_api = COMPOSE_CONFIG_YAML + (
+        "  api:\n"
+        "    image: ghcr.io/myorg/myapp:latest\n"
+        "    labels:\n"
+        "      deploy.role: app\n"
+        "    healthcheck:\n"
+        '      test: ["CMD", "true"]\n'
+    )
+    mock_process.responses.extend(
+        [
+            *_git_preflight(),
+            _ok(with_api),
+            *WORKER_DRAIN,
+            *WEB_ROLL,  # web ships
+            _err("pull failed"),  # api: pull
+            _ok(),  # git restore
+        ]
+    )
+    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 1
+    captured = capsys.readouterr()
+    assert "worker left down: web already deployed" in captured.out + captured.err
+    # The old worker must not come back beside the new web.
+    assert not any("v1.2.0" in str(call[2]) for call in mock_process.calls)
+
+
+def test_start_compose_failure_removes_partial_containers(mock_process, monkeypatch, tmp_path):
+    _chdir(monkeypatch, tmp_path)
+    mock_process.responses.extend(
+        [
+            *_git_preflight(),
+            _ok(COMPOSE_CONFIG_YAML),
+            *WORKER_DRAIN,
+            *WEB_ROLL,
+            _err("partial"),  # worker: compose up
+            _ok(WORKER_NEW + "\n"),  # worker: docker ps (one started anyway)
+            _ok(),  # worker: stop
+            _ok(),  # worker: rm
+            _ok(),  # git restore
+        ]
+    )
+    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 1
+    assert any("docker rm new_wrk_444" in c for c in _commands(mock_process))
 
 
 def test_parse_strategy_defaults_to_rolling():
