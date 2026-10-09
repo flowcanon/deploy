@@ -2,6 +2,7 @@
 
 import signal
 import time
+from dataclasses import dataclass
 
 from flow_deploy import compose, config, containers, git, lock, log
 
@@ -53,6 +54,7 @@ def deploy(
     signal.signal(signal.SIGINT, _cleanup_handler)
 
     keep_lock = False
+    lock_reason = "git restore failed"
     try:
         # Git pre-flight: dirty check, fetch, checkout detached.
         # Protected by the lock so concurrent deploys can't race on checkout.
@@ -87,41 +89,53 @@ def deploy(
         drain_first = [s for s in app_services if s.drains_first]
         rolling = [s for s in app_services if not s.drains_first]
 
+        def abort(drained, footer="FAILED (deploy aborted)"):
+            """Restore the repo, then drained services on their old tags."""
+            nonlocal keep_lock, lock_reason
+            log.info("")
+            if not git.restore(previous_sha):
+                keep_lock, lock_reason = True, "git restore failed"
+            if not _restore_drained(drained, compose_cmd):
+                keep_lock, lock_reason = True, "drained services could not be restored"
+            log.footer(footer)
+            return 1
+
         # Phase 1: drain-first services stop before anything rolls, so none of
-        # their old code runs beside new code or after new migrations. Each
-        # one's previous image tag is kept to bring it back if the deploy fails.
-        drained: list[tuple[config.ServiceConfig, str | None]] = []
+        # their old code runs beside new code or after new migrations. What
+        # each one was running is kept to bring it back if the deploy fails.
+        drained: list[Drained] = []
         for svc in drain_first:
-            result, old_tag = _drain_service(svc, tag, compose_cmd, project=project)
+            result, record = _drain_service(svc, tag, compose_cmd, project=project)
+            if record is not None:
+                drained.append(record)
             if result != 0:
-                log.info("")
-                keep_lock = not git.restore(previous_sha)
-                _restore_drained(drained, compose_cmd)
-                log.footer("FAILED (deploy aborted)")
-                return 1
-            drained.append((svc, old_tag))
+                return abort(drained)
 
         # Phase 2: rolling services, as before.
         for svc in rolling:
             result = _deploy_service(svc, tag, compose_cmd, project=project)
             if result != 0:
-                log.info("")
-                keep_lock = not git.restore(previous_sha)
-                _restore_drained(drained, compose_cmd)
-                log.footer("FAILED (deploy aborted)")
-                return 1
+                return abort(drained)
 
-        # Phase 3: drain-first services start on the new tag. There's no
-        # rollback past this point: the old code would now run against
-        # whatever the rolling phase changed, so a failure leaves the service
-        # down for an operator.
-        for svc in drain_first:
-            result = _start_service(svc, tag, compose_cmd, project=project)
-            if result != 0:
-                log.info("")
-                keep_lock = not git.restore(previous_sha)
-                log.footer(f"FAILED ({svc.name} is down; rolling services deployed)")
-                return 1
+        # Phase 3: drain-first services start on the new tag. Every one is
+        # attempted, so one failure doesn't strand the rest.
+        failed = [
+            record
+            for record in drained
+            if _start_service(record.svc, tag, compose_cmd, project=project) != 0
+        ]
+        if failed:
+            names = ", ".join(r.svc.name for r in failed)
+            if not rolling:
+                # Nothing else changed, so the old tags are still safe to run.
+                return abort(failed, footer=f"FAILED ({names} restored on previous tag)")
+            # Rolling services shipped: old code would now run against
+            # whatever they changed, so the failed services stay down.
+            log.info("")
+            if not git.restore(previous_sha):
+                keep_lock, lock_reason = True, "git restore failed"
+            log.footer(f"FAILED ({names} down; rolling services deployed)")
+            return 1
 
         elapsed = time.time() - start_time
 
@@ -131,8 +145,8 @@ def deploy(
     finally:
         if keep_lock:
             log.error(
-                "Lock retained — git restore failed, manual intervention required. "
-                "Run: git checkout --detach <sha> && rm .git/deploy-lock"
+                f"Lock retained — {lock_reason}, manual intervention required. "
+                "Fix the repo checkout and service state, then: rm .git/deploy-lock"
             )
         else:
             lock.release()
@@ -150,7 +164,14 @@ def _resolve_app_services(
     app_services = [s for s in all_services if s.is_app]
 
     if services_filter:
-        app_services = [s for s in app_services if s.name in services_filter]
+        selected = [s for s in app_services if s.name in services_filter]
+        skipped = [s.name for s in app_services if s.drains_first and s not in selected]
+        if skipped and any(not s.drains_first for s in selected):
+            log.error(
+                f"--service leaves drain-first {', '.join(skipped)} running old code "
+                "beside the new rolling services; include them unless that's intended"
+            )
+        app_services = selected
 
     if not app_services:
         log.error("No app services to deploy")
@@ -185,18 +206,30 @@ def _pull(svc: config.ServiceConfig, env: dict, compose_cmd: list[str]) -> bool:
 
 
 def _image_tag(image: str) -> str | None:
-    """The tag of ``registry/name:tag``, or None when the image has no tag."""
-    last = image.rsplit("/", 1)[-1]
-    return last.rsplit(":", 1)[1] if ":" in last else None
+    """The tag of ``registry/name:tag[@digest]``, or None when there's no tag."""
+    name = image.rsplit("/", 1)[-1].split("@", 1)[0]
+    return name.rsplit(":", 1)[1] if ":" in name else None
+
+
+@dataclass
+class Drained:
+    """What a drain-first service was running before its drain."""
+
+    svc: config.ServiceConfig
+    replicas: int = 0
+    old_tag: str | None = None
+    old_image: str = ""
 
 
 def _drain_service(
     svc: config.ServiceConfig, tag: str, compose_cmd: list[str], project: str = ""
-) -> tuple[int, str | None]:
+) -> tuple[int, Drained | None]:
     """Pull the new image, then stop and remove the running containers.
 
-    Pulls first so an unpullable tag fails before anything stops. Returns
-    (exit code, the old containers' image tag or None if none were running).
+    Pulls first so an unpullable tag fails before anything stops, returning
+    (1, None). Otherwise returns the record of what was running, with exit
+    code 1 if any container failed to stop or be removed: the caller must not
+    roll anything while old code may still be running.
     """
     log.service_start(svc.name)
     svc_start = time.time()
@@ -207,18 +240,34 @@ def _drain_service(
         return 1, None
 
     ctrs = containers.get_containers_for_service(svc.name, project=project)
-    old_tag = _image_tag(ctrs[0].get("Image", "")) if ctrs else None
+    images = list(dict.fromkeys(c.get("Image", "") for c in ctrs))
+    record = Drained(svc, replicas=len(ctrs))
+    if images:
+        record.old_image = images[0]
+        record.old_tag = _image_tag(images[0])
+    if len(images) > 1:
+        log.error(
+            f"{svc.name} was running mixed images ({', '.join(images)}); "
+            f"a rollback restores {images[0]}"
+        )
     if not ctrs:
         log.step("not running; nothing to drain")
+
     for ctr in ctrs:
         ctr_id = ctr["ID"]
         log.step(f"draining {ctr_id[:7]} ({svc.drain}s timeout)...")
-        containers.stop_container(ctr_id, timeout=svc.drain)
-        containers.remove_container(ctr_id)
+        if not containers.stop_container(ctr_id, timeout=svc.drain):
+            log.failure(f"could not stop {ctr_id[:7]}; it may still be running")
+            log.service_end()
+            return 1, record
+        if not containers.remove_container(ctr_id):
+            log.failure(f"could not remove {ctr_id[:7]}")
+            log.service_end()
+            return 1, record
 
     log.success(f"{svc.name} drained ({time.time() - svc_start:.1f}s)")
     log.service_end()
-    return 0, old_tag
+    return 0, record
 
 
 def _start_service(
@@ -251,20 +300,31 @@ def _start_service(
     return 0
 
 
-def _restore_drained(
-    drained: list[tuple[config.ServiceConfig, str | None]], compose_cmd: list[str]
-) -> None:
-    """Best-effort: bring drained services back on the tag they were running."""
-    for svc, old_tag in drained:
-        if old_tag is None:
-            log.step(f"{svc.name} was not running before the deploy; leaving it stopped")
+def _restore_drained(drained: list[Drained], compose_cmd: list[str]) -> bool:
+    """Bring drained services back as they were. Returns False if any couldn't be."""
+    ok = True
+    for record in drained:
+        name = record.svc.name
+        if not record.replicas:
+            log.step(f"{name} was not running before the deploy; leaving it stopped")
             continue
-        log.step(f"restoring {svc.name} on {old_tag}...")
+        if record.old_tag is None:
+            log.failure(
+                f"cannot restore {name}: no tag in its previous image "
+                f"({record.old_image or 'unknown'}); start it manually"
+            )
+            ok = False
+            continue
+        log.step(f"restoring {name} on {record.old_tag} ({record.replicas} replica(s))...")
         result = compose.compose_run(
-            ["up", "-d", "--no-deps", svc.name], env={"DEPLOY_TAG": old_tag}, cmd=compose_cmd
+            ["up", "-d", "--no-deps", "--scale", f"{name}={record.replicas}", name],
+            env={"DEPLOY_TAG": record.old_tag},
+            cmd=compose_cmd,
         )
         if result.returncode != 0:
-            log.failure(f"could not restore {svc.name}: {result.stderr.strip()}")
+            log.failure(f"could not restore {name}: {result.stderr.strip()}")
+            ok = False
+    return ok
 
 
 def _deploy_service(
