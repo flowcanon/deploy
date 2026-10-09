@@ -121,6 +121,50 @@ def test_signals_are_ignored_while_reverting(mock_process, monkeypatch, tmp_path
     assert seen == [signal.SIG_IGN]
 
 
+def test_signal_while_taking_the_lock_changes_nothing(mock_process, monkeypatch, tmp_path):
+    """Handlers are installed before the lock, so even this signal is handled."""
+    _chdir(monkeypatch, tmp_path)
+    released = []
+
+    def acquire_interrupted():
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+
+    monkeypatch.setattr(deploy_mod.lock, "acquire", acquire_interrupted)
+    monkeypatch.setattr(deploy_mod.lock, "release", lambda: released.append(True))
+    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert mock_process.calls == []
+    assert released == []  # never held, so never released
+
+
+def test_finally_ignores_signals_while_releasing(mock_process, monkeypatch, tmp_path):
+    _chdir(monkeypatch, tmp_path)
+    original = signal.getsignal(signal.SIGHUP)
+    during_release = []
+    real_release = deploy_mod.lock.release
+
+    def release():
+        during_release.append(signal.getsignal(signal.SIGHUP))
+        real_release()
+
+    monkeypatch.setattr(deploy_mod.lock, "release", release)
+    mock_process.responses.extend([*_git_preflight(), _ok(COMPOSE_CONFIG_YAML), *_web_roll()])
+    assert deploy(tag="abc123", services_filter=WEB_ONLY, cmd=COMPOSE_CMD) == 0
+    assert during_release == [signal.SIG_IGN]
+    assert signal.getsignal(signal.SIGHUP) is original
+
+
+def _web_roll():
+    return [
+        _ok(),  # web: pull
+        _ok(),  # web: scale to 2
+        _ok(WEB_CONTAINER_OLD + "\n" + WEB_CONTAINER_NEW + "\n"),  # web: ps
+        _ok("healthy\n"),  # web: health
+        _ok(),  # web: stop old
+        _ok(),  # web: rm old
+        _ok(),  # web: scale back
+    ]
+
+
 def test_unexpected_exception_reverts(mock_process, monkeypatch, tmp_path, capsys):
     _chdir(monkeypatch, tmp_path)
 

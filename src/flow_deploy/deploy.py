@@ -103,15 +103,9 @@ def deploy(
         _dry_run(tag, app_services)
         return EXIT_OK
 
-    # Acquire lock before any mutations (git checkout, container changes)
-    if not lock.acquire():
-        lock_info = lock.read_lock()
-        pid = lock_info["pid"] if lock_info else "unknown"
-        log.error(f"Deploy lock held by PID {pid}")
-        return EXIT_LOCKED
-
     # A signal (a cancelled CI job, Ctrl-C, a dropped ssh session) reverts
-    # like any other failure.
+    # like any other failure. Handlers go in before the lock is taken, so no
+    # signal can land between the two and skip cleanup.
     originals = {signum: signal.getsignal(signum) for signum in HANDLED_SIGNALS}
 
     def _interrupt(signum, frame):
@@ -121,7 +115,15 @@ def deploy(
         signal.signal(signum, _interrupt)
 
     run = _Run(compose_cmd)
+    locked = False
     try:
+        # Acquire lock before any mutations (git checkout, container changes)
+        locked = lock.acquire()
+        if not locked:
+            lock_info = lock.read_lock()
+            pid = lock_info["pid"] if lock_info else "unknown"
+            log.error(f"Deploy lock held by PID {pid}")
+            return EXIT_LOCKED
         return _deploy_locked(run, tag, tag_provided, services_filter)
     except (Exception, Interrupted) as exc:
         if isinstance(exc, Interrupted):
@@ -131,9 +133,13 @@ def deploy(
         log.error(f"{reason}; reverting")
         return run.revert(reason)
     finally:
+        # Ignore signals first, so one landing here can't skip the rest.
+        for signum in HANDLED_SIGNALS:
+            signal.signal(signum, signal.SIG_IGN)
         # Always released: a failed deploy puts things back rather than
         # leaving state for someone to clean up by hand.
-        lock.release()
+        if locked:
+            lock.release()
         for signum, handler in originals.items():
             signal.signal(signum, handler)
 
@@ -200,8 +206,10 @@ def _deploy_locked(
             return failed("deploy aborted")
 
     # Phase 3: drain-first services start in deploy order, at the replica
-    # count they ran. Every one is attempted, so one failure doesn't strand
-    # the rest; a failed one goes back to what it ran before.
+    # count they ran. One that wasn't running (just added in this release,
+    # or crashed) starts at 1: a deploy brings its services up. Every one is
+    # attempted, so one failure doesn't strand the rest; a failed one goes
+    # back to what it ran before.
     by_name = {record.svc.name: record for record in run.drained}
     failures = []
     for svc in drain_first:
