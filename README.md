@@ -89,6 +89,44 @@ All configuration is via Docker labels on your services:
 | `deploy.healthcheck.timeout` | `120` | Seconds to wait for healthy |
 | `deploy.healthcheck.poll` | `2` | Seconds between health polls |
 | `deploy.healthcheck.skip` | `false` | Skip healthcheck validation and waiting |
+| `deploy.strategy` | `rolling` | `rolling` or `drain-first` (see below) |
+
+### Drain-first services
+
+Rolling deploys briefly run old and new containers side by side. That's right
+for web servers, but wrong for queue workers and schedulers. An old worker
+that's still draining keeps running old code after the new web container has
+migrated the database.
+
+Label those services `deploy.strategy: drain-first` and the deploy runs in three
+phases:
+
+1. **Drain.** Each drain-first service, in `deploy.order`, pulls its new image
+   and then stops its running containers. Stopping is `docker stop --time
+   <deploy.drain>`: SIGTERM first, so Celery-style workers finish their current
+   tasks and stop taking new ones, then SIGKILL when the drain expires. Nothing
+   rolls until every drain has finished.
+2. **Roll.** Every rolling service deploys as usual.
+3. **Start.** Each drain-first service starts on the new tag and must pass its
+   health check.
+
+The service is down from the start of its drain until phase 3. Queued work
+waits in the broker and the new worker picks it up.
+
+If the deploy fails before phase 3, drained services are restarted on the image
+tag they were running before. If a drain-first service fails its own start,
+there is no rollback: its old code would now run against whatever the rolling
+phase changed. The deploy fails, the service is left down, and an operator
+takes it from there.
+
+```yaml
+services:
+  worker:
+    labels:
+      deploy.role: app
+      deploy.strategy: drain-first
+      deploy.drain: "3660"   # longest job + margin
+```
 
 ## Host Discovery
 

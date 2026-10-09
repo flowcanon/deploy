@@ -84,12 +84,43 @@ def deploy(
         project = compose_dict.get("name", "")
         start_time = time.time()
 
-        for svc in app_services:
+        drain_first = [s for s in app_services if s.drains_first]
+        rolling = [s for s in app_services if not s.drains_first]
+
+        # Phase 1: drain-first services stop before anything rolls, so none of
+        # their old code runs beside new code or after new migrations. Each
+        # one's previous image tag is kept to bring it back if the deploy fails.
+        drained: list[tuple[config.ServiceConfig, str | None]] = []
+        for svc in drain_first:
+            result, old_tag = _drain_service(svc, tag, compose_cmd, project=project)
+            if result != 0:
+                log.info("")
+                keep_lock = not git.restore(previous_sha)
+                _restore_drained(drained, compose_cmd)
+                log.footer("FAILED (deploy aborted)")
+                return 1
+            drained.append((svc, old_tag))
+
+        # Phase 2: rolling services, as before.
+        for svc in rolling:
             result = _deploy_service(svc, tag, compose_cmd, project=project)
             if result != 0:
                 log.info("")
                 keep_lock = not git.restore(previous_sha)
+                _restore_drained(drained, compose_cmd)
                 log.footer("FAILED (deploy aborted)")
+                return 1
+
+        # Phase 3: drain-first services start on the new tag. There's no
+        # rollback past this point: the old code would now run against
+        # whatever the rolling phase changed, so a failure leaves the service
+        # down for an operator.
+        for svc in drain_first:
+            result = _start_service(svc, tag, compose_cmd, project=project)
+            if result != 0:
+                log.info("")
+                keep_lock = not git.restore(previous_sha)
+                log.footer(f"FAILED ({svc.name} is down; rolling services deployed)")
                 return 1
 
         elapsed = time.time() - start_time
@@ -130,7 +161,110 @@ def _resolve_app_services(
         log.error(f"Services missing healthcheck: {', '.join(missing)}")
         return None
 
+    unknown = config.validate_strategies(app_services)
+    if unknown:
+        log.error(
+            f"Unknown deploy.strategy: {', '.join(unknown)} "
+            f"(expected one of: {', '.join(config.STRATEGIES)})"
+        )
+        return None
+
     return app_services
+
+
+def _pull(svc: config.ServiceConfig, env: dict, compose_cmd: list[str]) -> bool:
+    image_name = (svc.image or svc.name).rsplit(":", 1)[0]
+    log.step(f"pulling {image_name}:{env['DEPLOY_TAG']}...")
+    pull_start = time.time()
+    result = compose.compose_run(["pull", svc.name], env=env, cmd=compose_cmd)
+    if result.returncode != 0:
+        log.failure(f"pull failed: {result.stderr.strip()}")
+        return False
+    log.step(f"pulled ({time.time() - pull_start:.1f}s)")
+    return True
+
+
+def _image_tag(image: str) -> str | None:
+    """The tag of ``registry/name:tag``, or None when the image has no tag."""
+    last = image.rsplit("/", 1)[-1]
+    return last.rsplit(":", 1)[1] if ":" in last else None
+
+
+def _drain_service(
+    svc: config.ServiceConfig, tag: str, compose_cmd: list[str], project: str = ""
+) -> tuple[int, str | None]:
+    """Pull the new image, then stop and remove the running containers.
+
+    Pulls first so an unpullable tag fails before anything stops. Returns
+    (exit code, the old containers' image tag or None if none were running).
+    """
+    log.service_start(svc.name)
+    svc_start = time.time()
+    env = {"DEPLOY_TAG": tag}
+
+    if not _pull(svc, env, compose_cmd):
+        log.service_end()
+        return 1, None
+
+    ctrs = containers.get_containers_for_service(svc.name, project=project)
+    old_tag = _image_tag(ctrs[0].get("Image", "")) if ctrs else None
+    if not ctrs:
+        log.step("not running; nothing to drain")
+    for ctr in ctrs:
+        ctr_id = ctr["ID"]
+        log.step(f"draining {ctr_id[:7]} ({svc.drain}s timeout)...")
+        containers.stop_container(ctr_id, timeout=svc.drain)
+        containers.remove_container(ctr_id)
+
+    log.success(f"{svc.name} drained ({time.time() - svc_start:.1f}s)")
+    log.service_end()
+    return 0, old_tag
+
+
+def _start_service(
+    svc: config.ServiceConfig, tag: str, compose_cmd: list[str], project: str = ""
+) -> int:
+    """Start a drained service on the new tag and wait for it to be healthy."""
+    log.service_start(svc.name)
+    svc_start = time.time()
+    env = {"DEPLOY_TAG": tag}
+
+    log.step("starting new container...")
+    result = compose.compose_run(["up", "-d", "--no-deps", svc.name], env=env, cmd=compose_cmd)
+    ctrs = containers.get_containers_for_service(svc.name, project=project)
+    if result.returncode != 0 or len(ctrs) != 1:
+        log.failure(f"start failed: {result.stderr.strip() or f'{len(ctrs)} containers'}")
+        log.service_end()
+        return 1
+
+    if svc.healthcheck_skip:
+        log.step("healthcheck skipped (deploy.healthcheck.skip=true)")
+    else:
+        log.step(f"waiting for health check (timeout: {svc.healthcheck_timeout}s)...")
+        if not _wait_for_healthy(ctrs[0]["ID"], svc.healthcheck_timeout, svc.healthcheck_poll):
+            log.failure(f"{svc.name} unhealthy; left running for inspection")
+            log.service_end()
+            return 1
+
+    log.success(f"{svc.name} started ({time.time() - svc_start:.1f}s)")
+    log.service_end()
+    return 0
+
+
+def _restore_drained(
+    drained: list[tuple[config.ServiceConfig, str | None]], compose_cmd: list[str]
+) -> None:
+    """Best-effort: bring drained services back on the tag they were running."""
+    for svc, old_tag in drained:
+        if old_tag is None:
+            log.step(f"{svc.name} was not running before the deploy; leaving it stopped")
+            continue
+        log.step(f"restoring {svc.name} on {old_tag}...")
+        result = compose.compose_run(
+            ["up", "-d", "--no-deps", svc.name], env={"DEPLOY_TAG": old_tag}, cmd=compose_cmd
+        )
+        if result.returncode != 0:
+            log.failure(f"could not restore {svc.name}: {result.stderr.strip()}")
 
 
 def _deploy_service(
@@ -143,15 +277,9 @@ def _deploy_service(
     env = {"DEPLOY_TAG": tag}
 
     # 1. Pull
-    image_name = (svc.image or svc.name).rsplit(":", 1)[0]
-    log.step(f"pulling {image_name}:{tag}...")
-    pull_start = time.time()
-    result = compose.compose_run(["pull", svc.name], env=env, cmd=compose_cmd)
-    if result.returncode != 0:
-        log.failure(f"pull failed: {result.stderr.strip()}")
+    if not _pull(svc, env, compose_cmd):
         log.service_end()
         return 1
-    log.step(f"pulled ({time.time() - pull_start:.1f}s)")
 
     # 2. Scale to 2
     log.step("starting new container...")
@@ -251,12 +379,25 @@ def _dry_run(tag: str, services: list[config.ServiceConfig]) -> None:
     log.info(f"tag: {tag}")
     log.info(f"services: {', '.join(s.name for s in services)}")
     log.info("")
+    drain_first = [s for s in services if s.drains_first]
+    for svc in drain_first:
+        log.service_start(svc.name)
+        image_name = (svc.image or svc.name).rsplit(":", 1)[0]
+        log.step(f"would pull {image_name}:{tag}")
+        log.step(f"would drain running containers first ({svc.drain}s timeout)")
+        log.service_end()
     for svc in services:
+        if svc.drains_first:
+            continue
         log.service_start(svc.name)
         image_name = (svc.image or svc.name).rsplit(":", 1)[0]
         log.step(f"would pull {image_name}:{tag}")
         log.step(f"would scale to 2, health check (timeout: {svc.healthcheck_timeout}s)")
         log.step(f"would drain old container ({svc.drain}s timeout)")
         log.step("would scale back to 1")
+        log.service_end()
+    for svc in drain_first:
+        log.service_start(svc.name)
+        log.step(f"would start on {tag}, health check (timeout: {svc.healthcheck_timeout}s)")
         log.service_end()
     log.footer("dry-run complete")
