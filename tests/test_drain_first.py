@@ -84,7 +84,11 @@ def test_drain_first_runs_drain_then_rolling_then_start(mock_process, monkeypatc
     assert not any("--scale worker=2" in c for c in cmds)
 
 
-def test_drain_first_service_not_running_is_started_after(mock_process, monkeypatch, tmp_path):
+def test_drain_first_service_not_running_is_started_at_one_replica(
+    mock_process, monkeypatch, tmp_path
+):
+    """Deliberate: a service with no containers (newly added, or crashed) comes
+    up with the deploy rather than staying at zero."""
     _chdir(monkeypatch, tmp_path)
     mock_process.responses.extend(
         [
@@ -99,6 +103,7 @@ def test_drain_first_service_not_running_is_started_after(mock_process, monkeypa
         ]
     )
     assert deploy(tag="abc123", cmd=COMPOSE_CMD) == 0
+    assert any("--scale worker=1 worker" in c for c in _commands(mock_process))
 
 
 def test_rolling_failure_restores_drained_service_on_its_old_tag(
