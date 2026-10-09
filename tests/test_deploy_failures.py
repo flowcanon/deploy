@@ -55,6 +55,72 @@ def test_sigterm_mid_deploy_restores_drained_and_releases(mock_process, monkeypa
     assert signal.getsignal(signal.SIGTERM) is original
 
 
+def test_sighup_from_a_dropped_ssh_session_reverts(mock_process, monkeypatch, tmp_path):
+    _chdir(monkeypatch, tmp_path)
+
+    def hung_up(*args, **kwargs):
+        signal.getsignal(signal.SIGHUP)(signal.SIGHUP, None)
+
+    monkeypatch.setattr(deploy_mod, "_deploy_service", hung_up)
+    mock_process.responses.extend(
+        [
+            *_git_preflight(),
+            _ok(DRAIN_CONFIG),
+            *WORKER_DRAIN,
+            _ok(),  # git restore
+            _ok(),  # worker: restore
+        ]
+    )
+    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert mock_process.calls[-1][2] == {"DEPLOY_TAG": "v1.2.0"}
+
+
+def test_signal_while_a_drain_is_stopping_still_restores(mock_process, monkeypatch, tmp_path):
+    """A drain can take an hour: a cancel mid-stop must still know what to restore."""
+    _chdir(monkeypatch, tmp_path)
+
+    def stop_interrupted(container_id, timeout=30):
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+
+    monkeypatch.setattr(deploy_mod.containers, "stop_container", stop_interrupted)
+    mock_process.responses.extend(
+        [
+            *_git_preflight(),
+            _ok(DRAIN_CONFIG),
+            _ok(),  # worker: pull
+            WORKER_DRAIN[1],  # worker: docker ps
+            _ok(),  # git restore
+            _ok(),  # worker: restore
+        ]
+    )
+    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert "--scale worker=1 worker" in _commands(mock_process)[-1]
+    assert mock_process.calls[-1][2] == {"DEPLOY_TAG": "v1.2.0"}
+
+
+def test_signals_are_ignored_while_reverting(mock_process, monkeypatch, tmp_path):
+    """A second signal mid-revert neither cuts it short nor starts another."""
+    _chdir(monkeypatch, tmp_path)
+    seen = []
+
+    def restore(drained, compose_cmd):
+        seen.append(signal.getsignal(signal.SIGTERM))
+        return True
+
+    monkeypatch.setattr(deploy_mod, "_restore_drained", restore)
+    mock_process.responses.extend(
+        [
+            *_git_preflight(),
+            _ok(DRAIN_CONFIG),
+            *WORKER_DRAIN,
+            _err("pull failed"),  # web: pull
+            _ok(),  # git restore
+        ]
+    )
+    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert seen == [signal.SIG_IGN]
+
+
 def test_unexpected_exception_reverts(mock_process, monkeypatch, tmp_path, capsys):
     _chdir(monkeypatch, tmp_path)
 
