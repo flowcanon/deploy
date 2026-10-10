@@ -271,7 +271,14 @@ def test_rolling_abort_cleanup_failure_is_degraded(mock_process, monkeypatch, tm
     assert "cleanup failed for web" in captured.err
 
 
-def test_rolling_cutover_cleanup_failure_is_degraded(mock_process, monkeypatch, tmp_path):
+def test_rolling_cutover_cleanup_failure_still_succeeds(
+    mock_process, monkeypatch, tmp_path, capsys
+):
+    """As on master: the new container is healthy and serving, so it's a success.
+
+    The usual cause is the old container having exited on its own; failing
+    here would revert the repo underneath a healthy new container.
+    """
     _chdir(monkeypatch, tmp_path)
     mock_process.responses.extend(
         [
@@ -281,17 +288,19 @@ def test_rolling_cutover_cleanup_failure_is_degraded(mock_process, monkeypatch, 
             _ok(),  # web: scale to 2
             _ok(WEB_CONTAINER_OLD + "\n" + WEB_CONTAINER_NEW + "\n"),  # web: ps
             _ok("healthy\n"),  # web: health
-            _err("stop failed"),  # web: stop old
+            _err("No such container"),  # web: stop old
             _ok(),  # web: rm old
             _ok(),  # web: scale back
-            _ok(),  # git restore
         ]
     )
-    assert deploy(tag="abc123", services_filter=WEB_ONLY, cmd=COMPOSE_CMD) == EXIT_DEGRADED
+    assert deploy(tag="abc123", services_filter=WEB_ONLY, cmd=COMPOSE_CMD) == 0
+    captured = capsys.readouterr()
+    assert "warning: cleanup of old container old_web" in captured.out
+    assert "::error::" not in captured.out
 
 
-@pytest.mark.parametrize(("scale_back", "expected"), [(_ok(), 1), (_err("busy"), 3)])
-def test_rolling_scale_up_failure(mock_process, monkeypatch, tmp_path, scale_back, expected):
+def test_rolling_scale_up_failure_issues_no_further_commands(mock_process, monkeypatch, tmp_path):
+    """As on master: no scale-back after a failed scale-up."""
     _chdir(monkeypatch, tmp_path)
     mock_process.responses.extend(
         [
@@ -299,14 +308,17 @@ def test_rolling_scale_up_failure(mock_process, monkeypatch, tmp_path, scale_bac
             _ok(COMPOSE_CONFIG_YAML),
             _ok(),  # web: pull
             _err("port in use"),  # web: scale to 2
-            scale_back,  # web: scale back
             _ok(),  # git restore
         ]
     )
-    assert deploy(tag="abc123", services_filter=WEB_ONLY, cmd=COMPOSE_CMD) == expected
+    assert deploy(tag="abc123", services_filter=WEB_ONLY, cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert not any("--scale web=1" in c for c in _commands(mock_process))
 
 
-def test_rolling_unidentifiable_containers_scale_back(mock_process, monkeypatch, tmp_path):
+@pytest.mark.parametrize(("scale_back", "expected"), [(_ok(), 1), (_err("busy"), 3)])
+def test_rolling_unidentifiable_containers_scale_back(
+    mock_process, monkeypatch, tmp_path, scale_back, expected
+):
     _chdir(monkeypatch, tmp_path)
     twin = '{"ID": "%s", "Image": "ghcr.io/myorg/myapp:abc123", "CreatedAt": "2024-01-01"}'
     mock_process.responses.extend(
@@ -316,11 +328,39 @@ def test_rolling_unidentifiable_containers_scale_back(mock_process, monkeypatch,
             _ok(),  # web: pull
             _ok(),  # web: scale to 2
             _ok(twin % "a1" + "\n" + twin % "b2" + "\n"),  # web: ps (same tag, same time)
-            _ok(),  # web: scale back
+            scale_back,  # web: scale back
             _ok(),  # git restore
         ]
     )
-    assert deploy(tag="abc123", services_filter=WEB_ONLY, cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert deploy(tag="abc123", services_filter=WEB_ONLY, cmd=COMPOSE_CMD) == expected
+
+
+def test_drain_aborts_when_docker_ps_fails(mock_process, monkeypatch, tmp_path, capsys):
+    """Couldn't list != nothing running: never roll past an unknown drain."""
+    _chdir(monkeypatch, tmp_path)
+    mock_process.responses.extend(
+        [
+            *_git_preflight(),
+            _ok(DRAIN_CONFIG),
+            _ok(),  # worker: pull
+            _err("Cannot connect to the Docker daemon"),  # worker: docker ps
+            _ok(),  # git restore
+        ]
+    )
+    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
+    cmds = _commands(mock_process)
+    assert not any("--scale web=2" in c for c in cmds)
+    assert "not draining blind" in capsys.readouterr().out
+
+
+def test_drain_lists_restarting_containers_too(mock_process, monkeypatch, tmp_path):
+    _chdir(monkeypatch, tmp_path)
+    mock_process.responses.extend(
+        [*_git_preflight(), _ok(DRAIN_CONFIG), _ok(), _err("stop here"), _ok()]
+    )
+    deploy(tag="abc123", cmd=COMPOSE_CMD)
+    ps = next(c for c in _commands(mock_process) if c.startswith("docker ps"))
+    assert "--filter status=running --filter status=restarting" in ps
 
 
 @pytest.mark.parametrize(

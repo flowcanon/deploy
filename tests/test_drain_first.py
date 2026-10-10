@@ -414,8 +414,13 @@ def test_untagged_old_image_cannot_be_restored(mock_process, monkeypatch, tmp_pa
 def test_service_filter_skipping_drain_first_warns(mock_process, monkeypatch, tmp_path, capsys):
     _chdir(monkeypatch, tmp_path)
     mock_process.responses.extend([*_git_preflight(), _ok(COMPOSE_CONFIG_YAML), *WEB_ROLL])
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
     assert deploy(tag="abc123", services_filter=["web"], cmd=COMPOSE_CMD) == 0
-    assert "leaves drain-first worker running old code" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "warning: --service leaves drain-first worker running old code" in captured.out
+    # A warning on a deploy that succeeds: no error annotation.
+    assert "::error::" not in captured.out
+    assert captured.err == ""
 
 
 def test_start_failure_with_nothing_rolled_restores_old_tag(

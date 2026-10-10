@@ -9,15 +9,28 @@ def get_containers_for_service(service: str, project: str = "") -> list[dict]:
     """Get running containers for a service via docker ps.
 
     Returns list of dicts with keys: ID, Image, CreatedAt, State, Health.
+    An empty list if docker ps fails.
+    """
+    return list_containers_for_service(service, project) or []
+
+
+def list_containers_for_service(
+    service: str, project: str = "", statuses: tuple[str, ...] = ("running",)
+) -> list[dict] | None:
+    """Like get_containers_for_service, but None when docker ps fails.
+
+    For callers that must not mistake "couldn't list" for "nothing running".
+    ``statuses`` are OR'd docker ps status filters.
     """
     filters = ["--filter", f"label=com.docker.compose.service={service}"]
     if project:
         filters += ["--filter", f"label=com.docker.compose.project={project}"]
-    filters += ["--filter", "status=running"]
+    for status in statuses:
+        filters += ["--filter", f"status={status}"]
 
     result = process.run(["docker", "ps"] + filters + ["--format", "{{json .}}"])
     if result.returncode != 0:
-        return []
+        return None
 
     containers = []
     for line in result.stdout.strip().splitlines():

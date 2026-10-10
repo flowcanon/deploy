@@ -252,9 +252,11 @@ def _resolve_app_services(
         selected = [s for s in app_services if s.name in services_filter]
         skipped = [s.name for s in app_services if s.drains_first and s not in selected]
         if skipped and any(not s.drains_first for s in selected):
-            log.error(
-                f"--service leaves drain-first {', '.join(skipped)} running old code "
-                "beside the new rolling services; include them unless that's intended"
+            # A warning, not an error: the deploy proceeds and can succeed.
+            log.info(
+                f"warning: --service leaves drain-first {', '.join(skipped)} running "
+                "old code beside the new rolling services; include them unless "
+                "that's intended"
             )
         app_services = selected
 
@@ -325,7 +327,16 @@ def _drain_service(
         log.service_end()
         return 1
 
-    ctrs = containers.get_containers_for_service(svc.name, project=project)
+    # Restarting containers too: a crash-looping worker would otherwise come
+    # back on old code mid-deploy.
+    ctrs = containers.list_containers_for_service(
+        svc.name, project=project, statuses=("running", "restarting")
+    )
+    if ctrs is None:
+        # Not knowing what's running is not the same as nothing running.
+        log.failure(f"could not list {svc.name} containers; not draining blind")
+        log.service_end()
+        return 1
     images = list(dict.fromkeys(c.get("Image", "") for c in ctrs))
     record = Drained(svc, replicas=len(ctrs))
     if images:
@@ -477,8 +488,9 @@ def _deploy_service(
         cmd=compose_cmd,
     )
     if result.returncode != 0:
+        # As on master: fail without issuing further compose commands.
         log.failure(f"scale up failed: {result.stderr.strip()}")
-        return end(SVC_FAILED if _scale_back(svc.name, env, compose_cmd) else SVC_DIRTY)
+        return end(SVC_FAILED)
 
     # 3. Get containers, identify old vs new
     ctrs = containers.get_containers_for_service(svc.name, project=project)
@@ -518,9 +530,11 @@ def _deploy_service(
         clean = containers.remove_container(old_id) and clean
         clean = _scale_back(svc.name, env, compose_cmd) and clean
         if not clean:
-            # The new container is serving, but the old one may be too.
-            log.failure(f"{svc.name} cutover incomplete: old container {old_id[:7]} remains")
-            return end(SVC_DIRTY)
+            # The new container is healthy and serving, so the deploy
+            # succeeded, as on master. A stop/rm failure here is usually the
+            # old container having already exited; failing would revert the
+            # repo underneath a healthy new container.
+            log.step(f"warning: cleanup of old container {old_id[:7]} did not complete")
 
         elapsed = time.time() - svc_start
         log.success(f"{svc.name} deployed ({elapsed:.1f}s)")

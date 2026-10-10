@@ -140,15 +140,24 @@ A signal reverts the same way, and so does an unexpected error. The signals are
 SIGTERM, Ctrl-C (SIGINT), and SIGHUP. SIGHUP is what a remote deploy receives
 when the CI job driving it over ssh is cancelled. Further signals are ignored
 until the revert finishes, and logging keeps going even if the session's output
-has gone away. Drain-first services
-already healthy on the new tag stay. Cleanup that fails along the way (a new
-container that won't stop or be removed, a scale-back that fails) also makes the
-deploy exit `3`.
+has gone away. Drain-first services already healthy on the new tag stay.
 
 The deploy exits `1` when it failed and everything was put back. It exits `3`
-only when something couldn't be: the git restore failed, a restore's
-`compose up` failed, or the old image had no tag to restore. Even then the lock
-is released. Exit `3` is the signal that someone needs to look.
+only when something couldn't be put back:
+
+- the git restore failed
+- a restore's `compose up` failed
+- the old image had no tag to restore
+- a *failed* service's own cleanup failed, such as an aborted new container
+  that won't stop or be removed
+
+Even then the lock is released. Exit `3` is the signal that someone needs to
+look.
+
+Rolling deploys otherwise behave exactly as before; `tests/test_rolling_parity.py`
+replays them against a recording of the previous release. As before, a
+successful cutover whose old-container cleanup fails still succeeds, with a
+warning: the new container is healthy and serving.
 
 Deploying rolling services with `--service` while leaving drain-first services
 out prints a warning, since those keep running old code.
