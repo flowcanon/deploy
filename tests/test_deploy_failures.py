@@ -335,6 +335,41 @@ def test_rolling_unidentifiable_containers_scale_back(
     assert deploy(tag="abc123", services_filter=WEB_ONLY, cmd=COMPOSE_CMD) == expected
 
 
+def test_start_cannot_list_containers_is_degraded(mock_process, monkeypatch, tmp_path):
+    """Couldn't see what started, so couldn't remove it: exit 3, not a clean revert."""
+    _chdir(monkeypatch, tmp_path)
+    mock_process.responses.extend(
+        [
+            *_git_preflight(),
+            _ok(DRAIN_CONFIG),
+            *WORKER_DRAIN,
+            _ok(),  # worker: compose up
+            _err("Cannot connect to the Docker daemon"),  # worker: docker ps
+            _ok(),  # git restore
+            _ok(),  # worker: restore
+        ]
+    )
+    result = deploy(tag="abc123", services_filter=["worker"], cmd=COMPOSE_CMD)
+    assert result == EXIT_DEGRADED
+    start_ps = [c for c in _commands(mock_process) if c.startswith("docker ps")][-1]
+    assert "--filter status=running --filter status=restarting" in start_ps
+
+
+def test_signal_during_rolling_only_deploy_restores_git(mock_process, monkeypatch, tmp_path):
+    """Deliberate change from master (which released the lock and exited 1
+    without restoring): a signal now also puts the repo back."""
+    _chdir(monkeypatch, tmp_path)
+
+    def cancelled(*args, **kwargs):
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+
+    monkeypatch.setattr(deploy_mod, "_deploy_service", cancelled)
+    mock_process.responses.extend([*_git_preflight(), _ok(COMPOSE_CONFIG_YAML), _ok()])
+    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert _commands(mock_process)[-1] == "git checkout --detach prev123abc"
+    assert _lock_released(tmp_path)
+
+
 def test_drain_aborts_when_docker_ps_fails(mock_process, monkeypatch, tmp_path, capsys):
     """Couldn't list != nothing running: never roll past an unknown drain."""
     _chdir(monkeypatch, tmp_path)

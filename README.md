@@ -154,10 +154,17 @@ only when something couldn't be put back:
 Even then the lock is released. Exit `3` is the signal that someone needs to
 look.
 
-Rolling deploys otherwise behave exactly as before; `tests/test_rolling_parity.py`
-replays them against a recording of the previous release. As before, a
-successful cutover whose old-container cleanup fails still succeeds, with a
-warning: the new container is healthy and serving.
+Rolling deploys otherwise behave exactly as before. `tests/test_rolling_parity.py`
+replays 15 rolling scenarios against a recording of the previous release: every
+command, its environment, the exit code, and the lock. As before, a successful
+cutover whose old-container cleanup fails still succeeds, with a warning: the
+new container is healthy and serving.
+
+The two deliberate changes for rolling-only projects:
+
+- A failed git restore exits `3` and releases the lock.
+- A signal restores the repo before exiting `1`. Previously it released the
+  lock and exited without restoring.
 
 Deploying rolling services with `--service` while leaving drain-first services
 out prints a warning, since those keep running old code.

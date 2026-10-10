@@ -398,7 +398,15 @@ def _start_service(
         env=env,
         cmd=compose_cmd,
     )
-    ctrs = containers.get_containers_for_service(svc.name, project=project)
+    # Restarting containers count too, so a crash-looping one gets removed.
+    ctrs = containers.list_containers_for_service(
+        svc.name, project=project, statuses=("running", "restarting")
+    )
+    if ctrs is None:
+        # Can't see what started, so can't remove it: not a clean failure.
+        log.failure(f"could not list {svc.name} containers after starting them")
+        log.service_end()
+        return SVC_DIRTY
     if result.returncode != 0 or len(ctrs) != replicas:
         detail = result.stderr.strip() or f"{len(ctrs)} of {replicas} containers running"
         return fail(f"start failed: {detail}", ctrs)
