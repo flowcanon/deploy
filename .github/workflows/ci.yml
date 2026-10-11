@@ -7,10 +7,11 @@ on:
 
 jobs:
   lint:
-    # A release (the release PR, and its chore(release) commit on master)
+    # A release (release-builder's PR, and its chore(release) commit on master)
     # only bumps the version and CHANGELOG: nothing to test.
     if: >-
-      !(github.event_name == 'pull_request' && github.head_ref == 'release')
+      !(github.event_name == 'pull_request' && github.head_ref == 'release'
+        && github.event.pull_request.user.login == 'github-actions[bot]')
       && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(release):'))
     runs-on: ubuntu-latest
     steps:
@@ -29,10 +30,11 @@ jobs:
         run: script/lint
 
   test:
-    # A release (the release PR, and its chore(release) commit on master)
+    # A release (release-builder's PR, and its chore(release) commit on master)
     # only bumps the version and CHANGELOG: nothing to test.
     if: >-
-      !(github.event_name == 'pull_request' && github.head_ref == 'release')
+      !(github.event_name == 'pull_request' && github.head_ref == 'release'
+        && github.event.pull_request.user.login == 'github-actions[bot]')
       && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(release):'))
     runs-on: ubuntu-latest
     steps:
@@ -55,10 +57,11 @@ jobs:
   # Sharded across runners (pytest-split, balanced by the recorded
   # tests/integration/.test_durations); locally, run it with -n auto instead.
   integration:
-    # A release (the release PR, and its chore(release) commit on master)
+    # A release (release-builder's PR, and its chore(release) commit on master)
     # only bumps the version and CHANGELOG: nothing to test.
     if: >-
-      !(github.event_name == 'pull_request' && github.head_ref == 'release')
+      !(github.event_name == 'pull_request' && github.head_ref == 'release'
+        && github.event.pull_request.user.login == 'github-actions[bot]')
       && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(release):'))
     name: integration (${{ matrix.group }}/4)
     runs-on: ubuntu-latest
