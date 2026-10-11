@@ -52,6 +52,24 @@ def test_signal_mid_roll_reverts_everything(drain_host, tmp_path, signum):
     assert signal.getsignal(signum) is original
 
 
+@pytest.mark.parametrize(
+    "moment",
+    [
+        "{{.State.Health.Status}} web003",  # waiting for the new container's health
+        "docker stop --time 30 web001",  # the cutover is stopping the old one
+        "docker rm web001",  # ... or removing it
+        "--scale web=1 web",  # ... or scaling back
+    ],
+)
+def test_signal_mid_rolling_service_reverts_it(rolling_host, moment):
+    """The service being rolled is reverted too: no old and new left side by side."""
+    before = rolling_host.running_images()
+    rolling_host.before(moment, send(signal.SIGTERM))
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert rolling_host.running_images() == before
+    assert rolling_host.sha == "prev123abc"
+
+
 def test_signal_while_a_drain_is_stopping_waits_for_it_then_reverts(drain_host, capsys):
     """Held until the container has stopped and been removed, then reverted."""
     drain_host.before("docker stop --time 3660 worker", send(signal.SIGINT))
@@ -59,7 +77,9 @@ def test_signal_while_a_drain_is_stopping_waits_for_it_then_reverts(drain_host, 
     assert "finishing the drain of worker0" in capsys.readouterr().out
     cmds = drain_host.commands()
     stop = drain_host.index("docker stop --time 3660 worker")
-    assert cmds[stop + 1].startswith("docker rm worker")  # the stop and rm finished
+    # The stop, its exit-code check, and the rm all finished first.
+    assert cmds[stop + 1].startswith("docker inspect --format {{.State.ExitCode}} worker")
+    assert cmds[stop + 2].startswith("docker rm worker")
     assert drain_host.running_images() == v1(drain_host, "web", "scheduler", "worker")
 
 

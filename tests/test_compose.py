@@ -62,3 +62,23 @@ def test_compose_config_raises_on_failure(mock_process):
         raise AssertionError("Should have raised")
     except RuntimeError as e:
         assert "compose config failed" in str(e)
+
+
+def test_compose_config_without_interpolation(mock_process):
+    mock_process.responses.append(process.Result(0, "services: {}\n", ""))
+    compose_config(cmd=["docker", "compose"], no_interpolate=True)
+    assert mock_process.calls[0][1] == ["docker", "compose", "config", "--no-interpolate"]
+
+
+def test_config_hashes(mock_process):
+    from flow_deploy.compose import config_hashes
+
+    mock_process.responses.append(process.Result(0, "db abc\ncache def\n\n", ""))
+    mock_process.responses.append(process.Result(1, "", "unknown flag: --hash"))
+    assert config_hashes(["db", "cache"], cmd=["docker", "compose"]) == {
+        "db": "abc",
+        "cache": "def",
+    }
+    assert mock_process.calls[0][1] == ["docker", "compose", "config", "--hash=db,cache"]
+    assert config_hashes(["db"], cmd=["docker", "compose"]) is None  # an older compose
+    assert config_hashes([]) == {}

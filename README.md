@@ -109,7 +109,11 @@ phases:
    pulls its new image, then stops its running containers. Stopping is
    `docker stop --time <deploy.drain>`: SIGTERM first, so Celery-style workers
    finish their current tasks and stop taking new ones, then SIGKILL when the
-   drain expires. Nothing rolls until every drain has finished.
+   drain expires. Nothing rolls until every drain has finished. A container
+   that had to be killed (exit 137, or the whole drain used up) gets a
+   warning: its PID 1 probably isn't handling SIGTERM, typically a shell-form
+   `CMD` or an entrypoint script that doesn't `exec` the server. The same
+   warning covers a rolling service's old container.
 2. **Roll.** Rolling services deploy in `deploy.order`, as usual.
 3. **Start.** Drain-first services start in `deploy.order` on the new tag, and
    each must pass its health check.
@@ -172,14 +176,16 @@ sshd sends the remote process no signal when the client disconnects.
 `tests/integration/test_ci_cancel.py` checks this against a real sshd. The
 deploy runs to completion, or reverts on its own failure, exactly as if the job
 were still watching. Its output to the closed session is discarded rather than
-crashing it. Check the host afterwards (`flow-deploy status`) to see how it
-ended.
+crashing it. Every run is also written to `.git/flow-deploy.log` on the host
+(inside `.git`, so the tree stays clean; the last 20 runs are kept), and
+`flow-deploy status` shows how the last one ended.
 
 The deploy exits `1` when it failed and everything was put back. It exits `3`
 only when something couldn't be put back:
 
 - the git restore failed
-- a rollback or restore failed
+- a rollback or restore failed, including a restored service that doesn't
+  pass its health check (a revert waits for what it put back)
 - a *failed* service's own cleanup failed, such as an aborted new container
   that won't stop or be removed
 
@@ -264,18 +270,55 @@ while recreated ones run the previous SHA; when they all run one image, the
 SHA is the answer.
 
 If the project has a compose wrapper (`script/prod`), make the wrapper default
-`DEPLOY_TAG` the same way, so `script/prod up -d` is safe too:
+`DEPLOY_TAG` the same way, so `script/prod up -d` is safe too. It must fail
+closed: when `flow-deploy tag` can't tell, stop rather than fall through to
+`:latest`.
 
 ```sh
-if [ -z "${DEPLOY_TAG:-}" ] && command -v flow-deploy >/dev/null; then
-  DEPLOY_TAG=$(flow-deploy tag 2>/dev/null) && export DEPLOY_TAG
+if [ -z "${DEPLOY_TAG:-}" ]; then
+  DEPLOY_TAG=$(flow-deploy tag) || {
+    echo "script/prod: set DEPLOY_TAG (flow-deploy tag couldn't tell)" >&2
+    exit 1
+  }
+  export DEPLOY_TAG
 fi
 ```
 
-flow-deploy calls the wrapper itself; while it looks up the tag it sets
-`DEPLOY_TAG` to a placeholder, so the wrapper never recurses. A `--service`
+flow-deploy sets `DEPLOY_TAG` itself on every compose call it makes (to a
+placeholder while it looks up the tag, and in `flow-deploy config` in CI), so
+the wrapper never asks it and never recurses. On a fresh host with nothing
+running, pass the tag: `DEPLOY_TAG=v1.4.0 script/prod up -d`. A `--service`
 deploy that leaves some app services out leaves them on different tags, so it
 clears the record and warns.
+
+### Accessories and `.env`
+
+flow-deploy never touches accessories (`deploy.role=accessory`): no pulls, no
+restarts. A change to one lands on the next manual `up -d`, which recreates
+it. So a deploy and `flow-deploy status` warn when an accessory's compose
+config no longer matches the running container's (its config hash): plan that
+recreate (data, downtime) instead of discovering it.
+
+The common cause is `.env`: compose recreates every service that reads an
+`env_file` when the file changes, postgres and redis included. Keep
+accessories off the app's `.env`: drop `env_file` and list the few variables
+they need under `environment:`, interpolated from `.env` so the values still
+live in one place:
+
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    labels:
+      deploy.role: accessory
+```
+
+Then an app-env edit changes only the services that use those variables. For a
+manual change, scope it to the service you mean: `flow-deploy compose up -d
+--no-deps <service>`.
 
 ## Host Discovery
 
@@ -299,6 +342,13 @@ services:
 ```
 
 Resolution order: GitHub Actions variable > per-service label > `x-deploy` default.
+
+`flow-deploy config` (what `deploy-action` runs in CI) doesn't need the app's
+environment. If compose rejects the project with CI's empty `.env` (an
+`image: ${DOCKER_IMAGE}` with the variable unset, say), it retries without
+interpolation and warns, naming the unset variables. `${VARS}` in `x-deploy`
+or `deploy.*` labels then stay literal, so set those in CI or use the
+`HOST_NAME`/`HOST_USER`/`SSH_PORT` overrides.
 
 See [GitHub Actions Setup](docs/github-actions.md) for CI/CD integration.
 

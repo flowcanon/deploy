@@ -293,5 +293,17 @@ CI didn't push the image under that tag. Push the version tag as well as the SHA
 **`can't tell which tag is deployed`** from `flow-deploy tag` or `flow-deploy compose`:
 Services run different or untagged images (one image under `:latest` plus one other tag is fine), or nothing is running and no deploy is recorded. Set it explicitly: `DEPLOY_TAG=v1.4.0 flow-deploy compose up -d`.
 
+**`WARNING: compose config failed with this environment ... (unset: DOCKER_IMAGE)`** from host discovery:
+CI has no `.env`, so variables only set there are empty. Discovery retries without interpolation and carries on; the warning names the variables. It only matters if `x-deploy` or a `deploy.*` label uses them: set those in CI, or use the `HOST_NAME`/`HOST_USER`/`SSH_PORT` overrides.
+
+**`didn't exit on SIGTERM ... and was killed`:**
+The container's PID 1 isn't handling SIGTERM, so every deploy waits out the drain and kills it mid-request. Use an exec-form `CMD` (`["gunicorn", ...]`), or `exec` the server at the end of the entrypoint script.
+
+**`accessory postgres's config changed since it started`:**
+The next manual `up -d` will recreate it. Usually an `.env` edit: keep accessories off `env_file` and list their variables under `environment:` (see the README's "Accessories and `.env`").
+
+**How did a deploy end, when CI was cancelled?**
+On the host: `flow-deploy status` (last run and exit code), or `.git/flow-deploy.log`.
+
 **Health check timeout:**
 Increase the timeout via label: `deploy.healthcheck.timeout: 300`. Check that your app's health endpoint responds within the Docker healthcheck interval.

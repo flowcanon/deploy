@@ -4,6 +4,7 @@ import json
 
 from flow_deploy import process
 from flow_deploy.containers import (
+    exit_code,
     get_container_health,
     get_containers_for_service,
     identify_old_new,
@@ -13,6 +14,7 @@ from flow_deploy.containers import (
     local_image_id,
     other_projects_here,
     remove_container,
+    running_config_hashes,
     stop_container,
 )
 
@@ -231,3 +233,29 @@ def test_other_projects_here_failure(mock_process, monkeypatch, tmp_path):
     monkeypatch.delenv("PWD", raising=False)
     mock_process.responses.append(process.Result(1, "", "daemon down"))
     assert other_projects_here("proj", ["web"]) is None
+
+
+def test_exit_code(mock_process):
+    mock_process.responses += [
+        process.Result(0, "137\n", ""),
+        process.Result(1, "", "No such container"),
+        process.Result(0, "<no value>\n", ""),
+    ]
+    assert exit_code("abc") == 137
+    assert mock_process.calls[0][1] == [
+        "docker",
+        "inspect",
+        "--format",
+        "{{.State.ExitCode}}",
+        "abc",
+    ]
+    assert exit_code("gone") is None
+    assert exit_code("odd") is None
+
+
+def test_running_config_hashes(mock_process):
+    mock_process.responses += [process.Result(0, "h1\nh1\n\n", ""), process.Result(1, "", "")]
+    assert running_config_hashes("db", project="proj") == {"h1"}
+    assert "label=com.docker.compose.project=proj" in mock_process.calls[0][1]
+    assert "label=com.docker.compose.oneoff=False" in mock_process.calls[0][1]
+    assert running_config_hashes("db") is None

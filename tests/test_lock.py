@@ -59,3 +59,35 @@ def test_read_lock_corrupt_returns_none():
     with open(".git/deploy-lock", "w") as f:
         f.write("{not json")
     assert read_lock() is None
+
+
+def _contend(path, barrier, results, hold):
+    os.chdir(path)
+    barrier.wait()
+    results.put(acquire())
+    hold.wait(5)  # stay alive, so a held lock isn't mistaken for a stale one
+
+
+def test_concurrent_acquires_have_exactly_one_winner(tmp_path):
+    """Deploys started together: only one may get the lock. (With the guard's
+    flock stubbed out, the old check-then-write race let several through.)"""
+    import multiprocessing
+
+    (tmp_path / ".git").mkdir(exist_ok=True)
+    ctx = multiprocessing.get_context("fork")
+    for _ in range(5):
+        lock_file = tmp_path / ".git" / "deploy-lock"
+        if lock_file.exists():
+            lock_file.unlink()
+        barrier, results, hold = ctx.Barrier(8), ctx.Queue(), ctx.Event()
+        procs = [
+            ctx.Process(target=_contend, args=(str(tmp_path), barrier, results, hold))
+            for _ in range(8)
+        ]
+        for proc in procs:
+            proc.start()
+        wins = [results.get(timeout=10) for _ in procs]
+        hold.set()
+        for proc in procs:
+            proc.join(10)
+        assert wins.count(True) == 1

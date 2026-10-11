@@ -33,8 +33,9 @@ DELIBERATE_OUTCOMES = {
 def is_snapshot(args):
     """The pre-deploy checks: what each app service runs and the git tag or
     SHA that restores it, and that no other compose project runs these
-    services in this directory. Plus a revert's look for stopped leftovers
-    that compose would otherwise restart.
+    services in this directory, and accessory config drift. Plus a revert's
+    look for stopped leftovers that compose would otherwise restart, and the
+    exit code of each stopped container (to warn about a SIGKILL).
 
     New on this branch, issued before anything changes, so a failure can
     restore what each service ran rather than what HEAD or :latest says.
@@ -47,6 +48,9 @@ def is_snapshot(args):
         or args[:4] == ["docker", "inspect", "--format", "{{.Id}} {{.Image}}"]
         or args[:3] == ["docker", "image", "inspect"]
         or args[:3] == ["git", "rev-parse", "--verify"]
+        or args[:4] == ["docker", "inspect", "--format", "{{.State.ExitCode}}"]
+        or (args[:2] == ["docker", "ps"] and "config-hash" in line)
+        or any(a.startswith("--hash=") for a in args)
     )
 
 
@@ -104,6 +108,9 @@ def test_rolling_deploy_matches_master(name, monkeypatch, tmp_path):
     observed = record(deploy_mod, process, name, str(tmp_path))
 
     calls = [[args, env] for args, env in observed["calls"] if not is_snapshot(args)]
+    if observed["code"] == 0 and calls[-1][0] == ["git", "rev-parse", "HEAD"]:
+        # Deliberate: a successful deploy records the commit it deployed.
+        calls.pop()
     tag = SCENARIOS[name][2].get("tag", "v2") or "prev123abc"
     expected_calls = as_on_this_branch(MASTER[name]["calls"], tag)
     if name == "cutover_stop_fail":

@@ -1,6 +1,7 @@
 """Click entry point — all commands."""
 
 import json
+import re
 import sys
 
 import click
@@ -44,6 +45,14 @@ def status():
 
     log.info(f"Current SHA: {current_sha[:7] if current_sha else '(none)'}")
     log.info(f"Deployed tag: {tag} (from {how})" if tag else f"Deployed tag: unknown ({how})")
+    last = log.last_run()
+    if last:
+        header, code = last
+        ended = f"exit {code}" if code is not None else "no exit recorded (running, or killed)"
+        log.info(f"Last deploy: {header}: {ended} (log: {log.RUN_LOG})")
+    project = compose_dict.get("name", "")
+    for name in deploy_mod.accessory_drift(compose_dict, None, project, {"DEPLOY_TAG": tag or ""}):
+        log.info(f"Accessory {name}: config changed since it started; next `up -d` recreates it")
     log.info("")
 
     for svc in all_services:
@@ -143,11 +152,28 @@ def logs(service, follow, tail):
 def config(command):
     """Show resolved deploy configuration as JSON."""
     cmd = command.split() if command else None
+    # DEPLOY_TAG is set so a wrapper that defaults it from `flow-deploy tag`
+    # never has to ask (there's nothing deployed in CI to ask about).
+    env = {"DEPLOY_TAG": deployed.LOOKUP_PLACEHOLDER}
     try:
-        compose_dict = compose.compose_config(cmd=cmd)
+        compose_dict = compose.compose_config(cmd=cmd, env=env)
     except RuntimeError as e:
-        log.error(str(e))
-        sys.exit(1)
+        # Discovery only needs x-deploy and labels, not the app's env (CI
+        # has no .env): retry without interpolation rather than fail.
+        try:
+            compose_dict = compose.compose_config(cmd=cmd, env=env, no_interpolate=True)
+        except RuntimeError:
+            log.error(str(e))
+            sys.exit(1)
+        # compose logs these as: msg="The \"VAR\" variable is not set. ..."
+        unset = sorted(set(re.findall(r'The \\?"(\w+)\\?" variable is not set', str(e))))
+        missing = f" (unset: {', '.join(unset)})" if unset else ""
+        log.warning(
+            f"compose config failed with this environment{missing}; discovered hosts "
+            "from the uninterpolated config. ${VARS} in x-deploy or deploy.* labels "
+            "stay literal: set them, or use the HOST_NAME/HOST_USER/SSH_PORT overrides.",
+            stdout_clean=True,
+        )
 
     try:
         overrides = discovery.env_overrides()
