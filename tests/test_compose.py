@@ -1,5 +1,7 @@
 """Tests for compose.py — command resolution + execution."""
 
+import pytest
+
 from flow_deploy import process
 from flow_deploy.compose import compose_config, compose_run, resolve_command
 
@@ -85,3 +87,20 @@ def test_would_recreate_asks_compose_with_plain_progress(mock_process):
     assert env == {"DEPLOY_TAG": "v1", "COMPOSE_PROGRESS": "plain", "COMPOSE_ANSI": "never"}
     assert would_recreate("db", cmd=["docker", "compose"]) is False
     assert would_recreate("db", cmd=["docker", "compose"]) is None  # an older compose
+
+
+@pytest.mark.parametrize(
+    "line, recreates",
+    [
+        (" Container proj-db-1 Recreate ", True),  # Compose v5
+        (" DRY-RUN MODE -  Container proj-db-1  Recreate", True),  # Compose v2
+        (" DRY-RUN MODE -  Container proj-db-1  Recreated", False),  # the simulated result
+        (" DRY-RUN MODE -  Container proj-db-1  Running", False),
+        (" Container proj-db-1 Running ", False),
+    ],
+)
+def test_would_recreate_reads_both_compose_formats(mock_process, line, recreates):
+    from flow_deploy.compose import would_recreate
+
+    mock_process.responses.append(process.Result(0, "", line + "\n"))
+    assert would_recreate("db", cmd=["docker", "compose"]) is recreates

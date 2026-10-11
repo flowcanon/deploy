@@ -74,4 +74,5 @@ def would_recreate(
     if result.returncode != 0:
         return None
     lines = (result.stdout + "\n" + result.stderr).splitlines()
-    return any(re.match(r"\s*Container\s+\S+\s+Recreate\b", line) for line in lines)
+    # " Container proj-db-1 Recreate" on Compose v5; v2 prefixes " DRY-RUN MODE - ".
+    return any(re.search(r"\bContainer\s+\S+\s+Recreate\b", line) for line in lines)
