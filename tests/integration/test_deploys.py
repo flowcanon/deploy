@@ -527,3 +527,33 @@ def test_discovery_works_without_the_apps_env(stack):
     assert hosts[0]["host"] == "app-1.example.com"
     assert sorted(hosts[0]["services"]) == ["web", "worker"]
     assert "(unset: APP_IMAGE_NOT_SET_IN_CI)" in result.stderr
+
+
+def test_env_file_accessory_drift_matches_composes_own_decision(stack):
+    """An accessory reading an env_file: no warning when compose wouldn't
+    recreate it (config --hash disagreed with up here), a warning once an
+    env edit means it would."""
+    (stack.repo / ".gitignore").write_text("accessory.env\n")  # like a real .env
+    stack.git("add", ".gitignore")
+    stack.git("commit", "-q", "-m", "ignore the env file")
+    db = {"image": "${REGISTRY}/stub:v1", "env_file": "./accessory.env", "labels": ACCESSORY_LABELS}
+    stack.commit("v1", standard(db=db))
+    stack.commit("v2", standard(db=db))
+    stack.commit("v3", standard(db=db))
+    (stack.repo / "accessory.env").write_text("SETTING=a\n")
+    stack.up("v1")
+    db_ids = stack.container_ids("db")
+
+    unchanged = stack.deploy("v2")
+
+    assert unchanged.returncode == 0, unchanged.stdout + unchanged.stderr
+    assert "accessory" not in unchanged.stderr, unchanged.stderr
+    assert "Accessory db" not in stack.flow("status").stdout
+
+    (stack.repo / "accessory.env").write_text("SETTING=b\n")
+    edited = stack.deploy("v3")
+
+    assert edited.returncode == 0, edited.stdout + edited.stderr
+    assert "accessory db's config changed since it started" in edited.stderr
+    assert "Accessory db: config changed" in stack.flow("status").stdout
+    assert stack.container_ids("db") == db_ids, "flow-deploy recreated an accessory"

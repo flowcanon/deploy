@@ -142,27 +142,6 @@ def exit_code(container_id: str) -> int | None:
         return None
 
 
-def running_config_hashes(service: str, project: str = "") -> set[str] | None:
-    """The compose config hashes of a service's running containers. None if docker ps fails.
-
-    One-off containers (`compose run`) are left out: they aren't what `up` recreates.
-    """
-    filters = [
-        "--filter",
-        f"label=com.docker.compose.service={service}",
-        "--filter",
-        "label=com.docker.compose.oneoff=False",
-    ]
-    if project:
-        filters += ["--filter", f"label=com.docker.compose.project={project}"]
-    result = process.run(
-        ["docker", "ps", *filters, "--format", '{{.Label "com.docker.compose.config-hash"}}']
-    )
-    if result.returncode != 0:
-        return None
-    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
-
-
 def remove_container(container_id: str) -> bool:
     """Remove a container. Returns True on success."""
     result = process.run(["docker", "rm", container_id])

@@ -14,7 +14,6 @@ from flow_deploy.containers import (
     local_image_id,
     other_projects_here,
     remove_container,
-    running_config_hashes,
     stop_container,
 )
 
@@ -251,11 +250,3 @@ def test_exit_code(mock_process):
     ]
     assert exit_code("gone") is None
     assert exit_code("odd") is None
-
-
-def test_running_config_hashes(mock_process):
-    mock_process.responses += [process.Result(0, "h1\nh1\n\n", ""), process.Result(1, "", "")]
-    assert running_config_hashes("db", project="proj") == {"h1"}
-    assert "label=com.docker.compose.project=proj" in mock_process.calls[0][1]
-    assert "label=com.docker.compose.oneoff=False" in mock_process.calls[0][1]
-    assert running_config_hashes("db") is None

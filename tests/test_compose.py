@@ -70,15 +70,18 @@ def test_compose_config_without_interpolation(mock_process):
     assert mock_process.calls[0][1] == ["docker", "compose", "config", "--no-interpolate"]
 
 
-def test_config_hashes(mock_process):
-    from flow_deploy.compose import config_hashes
+def test_would_recreate_asks_compose_with_plain_progress(mock_process):
+    from flow_deploy.compose import would_recreate
 
-    mock_process.responses.append(process.Result(0, "db abc\ncache def\n\n", ""))
-    mock_process.responses.append(process.Result(1, "", "unknown flag: --hash"))
-    assert config_hashes(["db", "cache"], cmd=["docker", "compose"]) == {
-        "db": "abc",
-        "cache": "def",
-    }
-    assert mock_process.calls[0][1] == ["docker", "compose", "config", "--hash=db,cache"]
-    assert config_hashes(["db"], cmd=["docker", "compose"]) is None  # an older compose
-    assert config_hashes([]) == {}
+    recreate = " Container proj-db-1 Recreate \n Container proj-db-1 Recreated \n"
+    mock_process.responses += [
+        process.Result(0, "", recreate),
+        process.Result(0, "", " Container proj-db-1 Running \n"),
+        process.Result(1, "", "unknown flag: --dry-run"),
+    ]
+    assert would_recreate("db", cmd=["docker", "compose"], env={"DEPLOY_TAG": "v1"}) is True
+    _, args, env, _ = mock_process.calls[0]
+    assert args == ["docker", "compose", "up", "-d", "--dry-run", "--no-deps", "db"]
+    assert env == {"DEPLOY_TAG": "v1", "COMPOSE_PROGRESS": "plain", "COMPOSE_ANSI": "never"}
+    assert would_recreate("db", cmd=["docker", "compose"]) is False
+    assert would_recreate("db", cmd=["docker", "compose"]) is None  # an older compose

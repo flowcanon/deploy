@@ -296,7 +296,8 @@ clears the record and warns.
 flow-deploy never touches accessories (`deploy.role=accessory`): no pulls, no
 restarts. A change to one lands on the next manual `up -d`, which recreates
 it. So a deploy and `flow-deploy status` warn when an accessory's compose
-config no longer matches the running container's (its config hash): plan that
+config changed so that compose would recreate it (compose's own decision, from
+`up --dry-run`): plan that
 recreate (data, downtime) instead of discovering it.
 
 The common cause is `.env`: compose recreates every service that reads an

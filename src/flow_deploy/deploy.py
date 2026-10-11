@@ -464,15 +464,9 @@ def _warn_accessory_drift(
 def accessory_drift(
     compose_dict: dict, compose_cmd: list[str] | None, project: str, env: dict[str, str]
 ) -> list[str]:
-    """Running accessories whose compose config hash no longer matches."""
+    """Running accessories that the next `up` would recreate (compose's own call)."""
     names = [s.name for s in config.parse_services(compose_dict) if s.role == "accessory"]
-    wanted = compose.config_hashes(names, cmd=compose_cmd, env=env) or {}
-    drifted = []
-    for name in names:
-        running = containers.running_config_hashes(name, project=project)
-        if running and name in wanted and running != {wanted[name]}:
-            drifted.append(name)
-    return drifted
+    return [n for n in names if compose.would_recreate(n, cmd=compose_cmd, env=env)]
 
 
 def _degraded(problem: str) -> int:

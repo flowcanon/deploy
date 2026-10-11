@@ -330,6 +330,8 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml "$@"
 
 It fails closed: when `flow-deploy tag` can't tell, the wrapper stops rather than run compose on `:latest`. `flow-deploy` always sets `DEPLOY_TAG` when it calls the wrapper (to a placeholder while looking up the tag, and in `flow-deploy config`), so the default never asks it and never recurses. On a host with nothing running, pass `DEPLOY_TAG` explicitly.
 
+The wrapper must pass its arguments to compose unchanged and do nothing else: the tool runs `config`, `pull` and `up` (including `up --dry-run` to check accessories, §3.2) through it, and `exec`, `logs` and `flow-deploy compose` pass through it too, so a wrapper with side effects of its own would run them on every one.
+
 This pattern means the tool is completely agnostic about which compose files exist or how they're layered. The project defines its own composition strategy, and the tool just calls the wrapper with the appropriate subcommand arguments (`pull`, `up`, `stop`, etc.).
 
 **All examples in this spec that reference `<compose-command>` refer to whatever this wrapper resolves to.**
@@ -342,7 +344,7 @@ Secrets are managed via `.env` files, which Docker Compose reads natively. The t
 
 The `.env` file should be excluded from version control and provisioned separately (via Ansible, manual setup, or a secrets manager). The tool only requires that the file exists if the compose file references it.
 
-**Accessories and `.env`.** Compose recreates every service that reads an `env_file` when the file changes. The tool never touches accessories, so that recreate happens on the next manual `up -d`. Keep accessories off the app's `.env`: drop `env_file` and list the variables they need under `environment:` (interpolated from `.env`). Scope manual changes: `flow-deploy compose up -d --no-deps <service>`. Each deploy, and `flow-deploy status`, warns when an accessory's compose config hash (`<compose-command> config --hash=<svc>`) no longer matches its running container's `com.docker.compose.config-hash` label: a recreate is pending. Warn only.
+**Accessories and `.env`.** Compose recreates every service that reads an `env_file` when the file changes. The tool never touches accessories, so that recreate happens on the next manual `up -d`. Keep accessories off the app's `.env`: drop `env_file` and list the variables they need under `environment:` (interpolated from `.env`). Scope manual changes: `flow-deploy compose up -d --no-deps <service>`. Each deploy, and `flow-deploy status`, warns when compose would recreate an accessory's running container: `<compose-command> up -d --dry-run --no-deps <svc>` reports `Recreate` (run with `COMPOSE_PROGRESS=plain`; it changes nothing). That's compose's own decision, so it matches what the next `up -d` will do, `env_file` services included (`config --hash` hashes those differently from `up`). Warn only.
 
 ---
 
