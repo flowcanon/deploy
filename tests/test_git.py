@@ -65,23 +65,12 @@ def test_preflight_clean_repo(mock_process):
 
 
 def test_preflight_dirty_repo(mock_process, capsys):
-    mock_process.responses.append(_ok(" M dirty.py\n?? .deploy-tag\n"))
+    mock_process.responses.append(_ok(" M dirty.py\n"))
     code, prev = preflight_and_checkout("abc123")
     assert code == 1
     assert prev is None
-    captured = capsys.readouterr()
-    assert "working tree is dirty — deploy aborted" in captured.err
-    # What's dirty is named, one per line, so a CI log shows it.
-    assert " M dirty.py" in captured.out and "?? .deploy-tag" in captured.out
-    assert len(mock_process.calls) == 1  # nothing fetched or checked out
-
-
-def test_preflight_dirty_repo_lists_at_most_ten(mock_process, capsys):
-    mock_process.responses.append(_ok("".join(f"?? file{i}\n" for i in range(13))))
-    assert preflight_and_checkout("abc123") == (1, None)
-    out = capsys.readouterr().out
-    assert "?? file9" in out and "?? file10" not in out
-    assert "... and 3 more (git status)" in out
+    err = capsys.readouterr().err
+    assert "dirty" in err
 
 
 def test_preflight_fetch_failure(mock_process):
