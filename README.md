@@ -18,6 +18,25 @@ curl -fsSL https://deploy.flowcanon.com/install | sh
 
 This installs the `flow-deploy` binary to `~/.local/bin`. Start a new login shell if it's not in your `PATH`.
 
+### Upgrading
+
+`flow-deploy upgrade` replaces the running binary with the latest release. It
+downloads the new binary next to the old one, checks that it runs, then renames
+it over the old one, so a failed or bad download leaves the old binary in place.
+It needs write access to the binary's directory.
+
+The install is per user: each SSH user has its own `~/.local/bin/flow-deploy`.
+`deploy-action`'s `upgrade: true` upgrades the binary of the user it deploys
+as, and no one else's. Projects deployed as other users, or without
+`upgrade: true`, keep their version until upgraded.
+
+Upgrading from 0.3.0 runs 0.3.0's upgrade code, which doesn't check that the
+download runs, and exits with a traceback if the binary's directory isn't
+writable. Either failure makes `deploy-action`'s upgrade step fail, so the
+deploy doesn't run. The first deploy after upgrading needs no migration:
+`.git/deploy-tag` is written by that deploy, and containers an older version
+started are restored by the tag they were started from.
+
 ## Quick Start
 
 **1. Label your services** in `docker-compose.yml`:

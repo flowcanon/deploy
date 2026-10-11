@@ -101,11 +101,12 @@ def test_latest_version_failure(mock_dl):
     assert upgrade._latest_version() is None
 
 
+@patch("flow_deploy.upgrade._verify", return_value="flow-deploy, version 99.99.99")
 @patch("flow_deploy.upgrade._latest_version")
 @patch("flow_deploy.upgrade._download")
 @patch("flow_deploy.upgrade._binary_path")
 @patch("flow_deploy.upgrade._detect_libc")
-def test_upgrade_success(mock_libc, mock_path, mock_dl, mock_latest, tmp_path):
+def test_upgrade_success(mock_libc, mock_path, mock_dl, mock_latest, mock_verify, tmp_path):
     """Full upgrade succeeds: downloads, replaces binary."""
     binary = tmp_path / "flow-deploy"
     binary.write_text("old")
@@ -119,6 +120,8 @@ def test_upgrade_success(mock_libc, mock_path, mock_dl, mock_latest, tmp_path):
     assert result == 0
     mock_dl.assert_called_once()
     assert "latest/download/flow-deploy-linux-glibc" in mock_dl.call_args[0][0]
+    assert binary.read_text() == "new"
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".flow-deploy-")]
 
 
 @patch("flow_deploy.upgrade._latest_version")
@@ -159,11 +162,12 @@ def test_upgrade_no_binary(mock_path, mock_latest):
     assert result == 1
 
 
+@patch("flow_deploy.upgrade._verify", return_value="flow-deploy, version 99.99.99")
 @patch("flow_deploy.upgrade._latest_version")
 @patch("flow_deploy.upgrade._download")
 @patch("flow_deploy.upgrade._binary_path")
 @patch("flow_deploy.upgrade._detect_libc")
-def test_upgrade_cli(mock_libc, mock_path, mock_dl, mock_latest, tmp_path):
+def test_upgrade_cli(mock_libc, mock_path, mock_dl, mock_latest, mock_verify, tmp_path):
     """Upgrade command via CLI."""
     from click.testing import CliRunner
 
@@ -179,3 +183,65 @@ def test_upgrade_cli(mock_libc, mock_path, mock_dl, mock_latest, tmp_path):
     runner = CliRunner()
     result = runner.invoke(main, ["upgrade"])
     assert result.exit_code == 0
+
+
+@patch("flow_deploy.upgrade._latest_version", return_value="99.99.99")
+@patch("flow_deploy.upgrade._download")
+@patch("flow_deploy.upgrade._binary_path")
+@patch("flow_deploy.upgrade._detect_libc", return_value="glibc")
+def test_upgrade_keeps_the_old_binary_if_the_new_one_doesnt_run(
+    mock_libc, mock_path, mock_dl, mock_latest, tmp_path, capsys
+):
+    """A download that isn't a working binary never replaces the one that works."""
+    binary = tmp_path / "flow-deploy"
+    binary.write_text("old")
+    mock_path.return_value = str(binary)
+    mock_dl.side_effect = lambda url, dest: open(dest, "w").write("<html>not a binary</html>")
+    assert upgrade.upgrade() == 1
+    assert binary.read_text() == "old"
+    assert "the downloaded binary doesn't run" in capsys.readouterr().err
+    assert [p.name for p in tmp_path.iterdir()] == ["flow-deploy"]  # temp file removed
+
+
+@patch("flow_deploy.upgrade._latest_version", return_value="99.99.99")
+@patch("flow_deploy.upgrade._binary_path")
+@patch("flow_deploy.upgrade._detect_libc", return_value="glibc")
+def test_upgrade_of_an_unwritable_binary_says_so(
+    mock_libc, mock_path, mock_latest, tmp_path, capsys
+):
+    """v0.3.0 crashed with a traceback here; this says what to do."""
+    locked = tmp_path / "bin"
+    locked.mkdir()
+    (locked / "flow-deploy").write_text("old")
+    mock_path.return_value = str(locked / "flow-deploy")
+    locked.chmod(0o555)
+    try:
+        assert upgrade.upgrade() == 1
+    finally:
+        locked.chmod(0o755)
+    assert "isn't writable by this user" in capsys.readouterr().err
+    assert (locked / "flow-deploy").read_text() == "old"
+
+
+def test_verify_runs_the_binary(tmp_path):
+    good = tmp_path / "good"
+    good.write_text("#!/bin/sh\necho 'flow-deploy, version 1.2.3'\n")
+    good.chmod(0o755)
+    bad = tmp_path / "bad"
+    bad.write_text("#!/bin/sh\nexit 1\n")
+    bad.chmod(0o755)
+    other = tmp_path / "other"
+    other.write_text("#!/bin/sh\necho something else\n")
+    other.chmod(0o755)
+    assert upgrade._verify(str(good)) == "flow-deploy, version 1.2.3"
+    assert upgrade._verify(str(bad)) is None
+    assert upgrade._verify(str(other)) is None
+    assert upgrade._verify(str(tmp_path / "missing")) is None
+
+
+@patch(
+    "flow_deploy.upgrade.subprocess.run",
+    side_effect=__import__("subprocess").TimeoutExpired("x", 60),
+)
+def test_verify_times_out(mock_run):
+    assert upgrade._verify("/x") is None
