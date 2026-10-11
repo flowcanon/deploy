@@ -1,5 +1,10 @@
 # Changelog
 
+### [0.3.1](https://github.com/flowcanon/deploy/compare/v0.3.0...v0.3.1) (2026-10-11)
+
+- Drain-first deploys, version-tag deploys, and exact reverts [#31](https://github.com/flowcanon/deploy/pull/31)
+
+
 ## [0.3.0](https://github.com/flowcanon/deploy/compare/v0.2.7...v0.3.0) (2026-03-26)
 
 - Allow deploy command to work via cli [#29](https://github.com/flowcanon/deploy/pull/29)
