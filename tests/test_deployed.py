@@ -156,6 +156,16 @@ def test_tag_unknown_exits_1(host):
     assert "can't tell which tag is deployed" in result.stderr
 
 
+def test_tag_failure_keeps_stdout_clean_on_github_actions(host, monkeypatch):
+    """No ::error:: annotation on stdout: a script would capture it as the tag."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    host.fail("docker compose config")
+    result = CliRunner().invoke(main, ["tag"])
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert "can't tell which tag is deployed" in result.stderr
+
+
 def test_tag_compose_failure_exits_1(host):
     host.fail("docker compose config")
     assert CliRunner().invoke(main, ["tag"]).exit_code == 1
