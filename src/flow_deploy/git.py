@@ -3,10 +3,15 @@
 from flow_deploy import log, process
 
 
+def dirty_paths() -> list[str]:
+    """What makes the working tree dirty: `git status --porcelain` lines."""
+    result = process.run(["git", "status", "--porcelain"])
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
 def is_dirty() -> bool:
     """Return True if the working tree has uncommitted changes."""
-    result = process.run(["git", "status", "--porcelain"])
-    return bool(result.stdout.strip())
+    return bool(dirty_paths())
 
 
 def fetch() -> process.Result:
@@ -45,9 +50,15 @@ def preflight_and_checkout(tag: str | None = None) -> tuple[int, str | None]:
     - (0, previous_sha) on success.
     - (1, None) on error — git operation failed or working tree is dirty.
     """
-    # 1. Dirty check
-    if is_dirty():
-        log.error("working tree is dirty — deploy aborted")
+    # 1. Dirty check. Name what's dirty, so a remote deploy that stops here
+    # can be fixed from its CI log alone.
+    dirty = dirty_paths()
+    if dirty:
+        log.error("working tree is dirty — deploy aborted; uncommitted or untracked:")
+        for line in dirty[:10]:
+            log.step(line)
+        if len(dirty) > 10:
+            log.step(f"... and {len(dirty) - 10} more (git status)")
         return 1, None
 
     # 2. Fetch
