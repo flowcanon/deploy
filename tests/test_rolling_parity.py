@@ -33,9 +33,9 @@ DELIBERATE_OUTCOMES = {
 def is_snapshot(args):
     """The pre-deploy checks: what each app service runs and the git tag or
     SHA that restores it, and that no other compose project runs these
-    services in this directory, and accessory config drift. Plus a revert's
-    look for stopped leftovers that compose would otherwise restart, and the
-    exit code of each stopped container (to warn about a SIGKILL).
+    services in this directory. Plus a revert's look for stopped leftovers
+    that compose would otherwise restart, and the exit code of each stopped
+    container (to warn about a SIGKILL).
 
     New on this branch, issued before anything changes, so a failure can
     restore what each service ran rather than what HEAD or :latest says.
@@ -49,7 +49,6 @@ def is_snapshot(args):
         or args[:3] == ["docker", "image", "inspect"]
         or args[:3] == ["git", "rev-parse", "--verify"]
         or args[:4] == ["docker", "inspect", "--format", "{{.State.ExitCode}}"]
-        or "--dry-run" in args
     )
 
 

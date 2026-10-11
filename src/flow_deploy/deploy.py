@@ -251,7 +251,6 @@ def _deploy_locked(
     project = run.project
     compose_cmd = run.compose_cmd
     start_time = time.time()
-    _warn_accessory_drift(compose_dict, compose_cmd, project, {"DEPLOY_TAG": tag})
 
     # A release that renames the compose project would start a second stack
     # beside the running one, and snapshot (so revert) nothing.
@@ -443,30 +442,6 @@ def _stop_reporting(name: str, ctr_id: str, timeout: int, isolate: bool = False)
             "in its entrypoint script)"
         )
     return True
-
-
-def _warn_accessory_drift(
-    compose_dict: dict, compose_cmd: list[str], project: str, env: dict[str, str]
-) -> None:
-    """Warn about accessories whose config changed since they were started.
-
-    flow-deploy never touches accessories, so the change lands on the next
-    manual `up -d`, which recreates them: plan it (data, downtime). Only a
-    warning; any trouble working it out is ignored.
-    """
-    for name in accessory_drift(compose_dict, compose_cmd, project, env):
-        log.warning(
-            f"accessory {name}'s config changed since it started; the next `up -d` "
-            "will recreate it. flow-deploy leaves it alone: plan that change."
-        )
-
-
-def accessory_drift(
-    compose_dict: dict, compose_cmd: list[str] | None, project: str, env: dict[str, str]
-) -> list[str]:
-    """Running accessories that the next `up` would recreate (compose's own call)."""
-    names = [s.name for s in config.parse_services(compose_dict) if s.role == "accessory"]
-    return [n for n in names if compose.would_recreate(n, cmd=compose_cmd, env=env)]
 
 
 def _degraded(problem: str) -> int:

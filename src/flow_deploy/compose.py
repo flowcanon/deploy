@@ -1,7 +1,6 @@
 """Compose command resolution + execution."""
 
 import os
-import re
 
 import yaml
 
@@ -55,24 +54,3 @@ def compose_config(
     if result.returncode != 0:
         raise RuntimeError(f"compose config failed: {result.stderr}")
     return yaml.safe_load(result.stdout)
-
-
-def would_recreate(
-    service: str, cmd: list[str] | None = None, env: dict[str, str] | None = None
-) -> bool | None:
-    """Whether `up` would recreate ``service``'s running containers now.
-
-    Asks compose itself (`up --dry-run`), so it matches compose's own
-    decision exactly: `config --hash` doesn't hash env_file services the way
-    `up` does. Changes nothing. None if compose can't say.
-    """
-    command = (cmd or resolve_command()) + ["up", "-d", "--dry-run", "--no-deps", service]
-    # Plain progress lines, whatever the operator's COMPOSE_PROGRESS says.
-    result = process.run(
-        command, env={**(env or {}), "COMPOSE_PROGRESS": "plain", "COMPOSE_ANSI": "never"}
-    )
-    if result.returncode != 0:
-        return None
-    lines = (result.stdout + "\n" + result.stderr).splitlines()
-    # " Container proj-db-1 Recreate" on Compose v5; v2 prefixes " DRY-RUN MODE - ".
-    return any(re.search(r"\bContainer\s+\S+\s+Recreate\b", line) for line in lines)
