@@ -47,6 +47,14 @@ def test_compose_config_parses_yaml(mock_process):
     assert config["services"]["web"]["image"] == "myapp:latest"
 
 
+def test_compose_config_with_env(mock_process):
+    mock_process.responses.append(process.Result(0, "services: {}\n", ""))
+    compose_config(cmd=["docker", "compose"], env={"DEPLOY_TAG": "v2"})
+    _, args, env, _ = mock_process.calls[0]
+    assert args == ["docker", "compose", "config"]
+    assert env == {"DEPLOY_TAG": "v2"}
+
+
 def test_compose_config_raises_on_failure(mock_process):
     mock_process.responses.append(process.Result(1, "", "error"))
     try:

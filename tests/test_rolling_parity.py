@@ -1,15 +1,16 @@
-"""Rolling deploys behave exactly as on master (0.3.0).
+"""Rolling deploys behave as on master (0.3.0), apart from listed, deliberate changes.
 
 fixtures/rolling_master.json was recorded by running tests/rolling_scenarios.py
-against master's flow_deploy: every docker/compose/git command, its env, the
-exit code, and whether the lock was left behind. A project that doesn't use
-drain-first must see the same commands in the same order. Agreed departures
-are listed in DELIBERATE_CHANGES; signals are covered separately in
-test_deploy_failures.py (master exited without restoring git; this branch
-restores it).
+against master's flow_deploy on a FakeHost: every docker/compose/git command,
+its env, the exit code, and whether the lock was left behind. A project that
+doesn't use drain-first must see the same commands in the same order, once
+the departures below are applied to master's record. Signals are covered
+separately in test_deploy_failures.py (master exited without restoring git;
+this branch restores it).
 """
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -20,8 +21,8 @@ from tests.rolling_scenarios import SCENARIOS, record
 
 MASTER = json.loads((Path(__file__).parent / "fixtures" / "rolling_master.json").read_text())
 
-# Agreed departures from master, by scenario.
-DELIBERATE_CHANGES = {
+# Agreed departures from master's outcome, by scenario.
+DELIBERATE_OUTCOMES = {
     # A failed git restore exits 3 ("needs a person") instead of 1, and the
     # lock is released: master's retained lock was broken by the next deploy
     # anyway, since acquire() clears locks whose PID has exited.
@@ -29,20 +30,62 @@ DELIBERATE_CHANGES = {
 }
 
 
-def deliberate_command_changes(calls):
-    """master's commands, with the agreed command-level fix applied.
+def is_snapshot(args):
+    """The pre-deploy checks: what each app service runs, aliased by image ID,
+    and that no other compose project runs in this directory. Plus a revert's
+    look for stopped leftovers that compose would otherwise restart.
 
-    Scale-back gains --no-recreate. On master, scale-back after a failed
-    health check ran `compose up --scale svc=1` with the new tag, which
-    recreated the surviving old container on the new, failing image. Found
-    by tests/integration (test_rolling_service_fails_its_healthcheck).
+    New on this branch, issued before anything changes, so a failure can
+    restore the exact image each service ran whatever tag it was started
+    from (a version, a sha, a moved :latest, or none).
     """
+    line = " ".join(args)
+    return (
+        (args[:2] == ["docker", "ps"] and "status=restarting" in line)
+        or (args[:2] == ["docker", "ps"] and "project.working_dir=" in line)
+        or (args[:2] == ["docker", "ps"] and "status=created" in line)
+        or args[:4] == ["docker", "inspect", "--format", "{{.Id}} {{.Image}}"]
+        or args[:2] == ["docker", "tag"]
+    )
+
+
+def as_on_this_branch(calls, tag):
+    """master's commands with the agreed command-level changes applied."""
     fixed = []
     for args, env in calls:
-        if args[-6:-2] == ["up", "-d", "--no-deps", "--scale"] and args[-2].endswith("=1"):
-            args = args[:-3] + ["--no-recreate"] + args[-3:]  # after --no-deps
+        if args == ["git", "fetch", "origin"]:
+            # Version tags are fetched, and a re-pushed tag moves locally.
+            args = ["git", "fetch", "--tags", "--force", "origin"]
+        elif args[-1:] == ["config"]:
+            # Rendered with the deploy tag, so image refs are the ones deployed.
+            env = {"DEPLOY_TAG": tag}
+        elif args[-6:-2] == ["up", "-d", "--no-deps", "--scale"] and args[-2].endswith("=1"):
+            # Scale-back gains --no-recreate. On master, scale-back after a
+            # failed health check recreated the surviving old container on the
+            # new, failing image. Found by tests/integration.
+            args = args[:-3] + ["--no-recreate"] + args[-3:]
         fixed.append([args, env])
     return fixed
+
+
+def by_appearance(calls):
+    """Container IDs renamed in order of first mention, per service.
+
+    FakeHost numbers containers from one counter, so a container master
+    created and this branch doesn't would shift every later ID.
+    """
+    names = {}
+    out = []
+    for args, env in calls:
+        renamed = []
+        for arg in args:
+            m = re.fullmatch(r"(web|worker)\d{3}", arg)
+            if m:
+                seen = [v for k, v in names.items() if k.startswith(m.group(1))]
+                arg = names.setdefault(arg, f"{m.group(1)}#{len(seen) + 1}")
+            renamed.append(arg)
+        out.append([renamed, env])
+    return out
 
 
 def test_scenarios_and_fixture_agree():
@@ -50,7 +93,7 @@ def test_scenarios_and_fixture_agree():
 
 
 @pytest.mark.parametrize("name", sorted(SCENARIOS))
-def test_rolling_deploy_matches_master(name, monkeypatch, tmp_path, capsys):
+def test_rolling_deploy_matches_master(name, monkeypatch, tmp_path):
     # record() swaps process.run itself; restore it after the test.
     monkeypatch.setattr(process, "run", process.run)
     monkeypatch.setattr(process, "run_streaming", process.run_streaming)
@@ -59,9 +102,26 @@ def test_rolling_deploy_matches_master(name, monkeypatch, tmp_path, capsys):
 
     observed = record(deploy_mod, process, name, str(tmp_path))
 
-    expected_calls = deliberate_command_changes(MASTER[name]["calls"])
-    assert observed["calls"] == expected_calls, f"{name}: commands differ from master"
+    calls = [[args, env] for args, env in observed["calls"] if not is_snapshot(args)]
+    tag = SCENARIOS[name][2].get("tag", "v2") or "prev123abc"
+    expected_calls = as_on_this_branch(MASTER[name]["calls"], tag)
+    if name == "cutover_stop_fail":
+        # Deliberate: no scale-back while the old container may still be
+        # running. With two containers left, scale-back removes one, and
+        # with --no-recreate compose might remove the new one.
+        expected_calls = [c for c in expected_calls if c[0][-2:] != ["web=1", "web"]]
+    if name == "second_service_health_abort":
+        # Deliberate: a later service's failure rolls back services that had
+        # already shipped. master left web on the new tag beside a worker on
+        # the old one; this branch rolls web back to the image it ran.
+        rollback = calls[len(expected_calls) :]
+        calls = calls[: len(expected_calls)]
+        composes = [env for args, env in rollback if args[:2] == ["docker", "compose"]]
+        assert composes and all(env["DEPLOY_TAG"].startswith("flow-deploy-") for env in composes)
+        assert any(args[-1] == "web" and "--scale" in args for args, _ in rollback)
+    assert by_appearance(calls) == by_appearance(expected_calls), f"{name}: commands differ"
+
     expected = {"code": MASTER[name]["code"], "lock_left": MASTER[name]["lock_left"]}
-    expected.update(DELIBERATE_CHANGES.get(name, {}))
+    expected.update(DELIBERATE_OUTCOMES.get(name, {}))
     assert observed["code"] == expected["code"]
     assert observed["lock_left"] == expected["lock_left"]

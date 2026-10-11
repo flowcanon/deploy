@@ -31,7 +31,7 @@
      "git",
      "checkout",
      "--detach",
-     "abc123"
+     "v2"
     ],
     null
    ],
@@ -51,7 +51,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -67,7 +67,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -76,6 +76,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=web",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -89,7 +91,7 @@
      "inspect",
      "--format",
      "{{.State.Health.Status}}",
-     "new_web_222"
+     "web003"
     ],
     null
    ],
@@ -99,7 +101,7 @@
      "stop",
      "--time",
      "30",
-     "old_web_111"
+     "web001"
     ],
     null
    ],
@@ -107,7 +109,7 @@
     [
      "docker",
      "rm",
-     "old_web_111"
+     "web001"
     ],
     null
    ],
@@ -123,7 +125,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -134,7 +136,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -150,7 +152,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -159,6 +161,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=worker",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -172,7 +176,7 @@
      "inspect",
      "--format",
      "{{.State.Health.Status}}",
-     "new_wrk_444"
+     "worker004"
     ],
     null
    ],
@@ -182,7 +186,7 @@
      "stop",
      "--time",
      "30",
-     "old_wrk_333"
+     "worker002"
     ],
     null
    ],
@@ -190,7 +194,7 @@
     [
      "docker",
      "rm",
-     "old_wrk_333"
+     "worker002"
     ],
     null
    ],
@@ -206,7 +210,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ]
   ],
@@ -244,7 +248,7 @@
      "git",
      "checkout",
      "--detach",
-     "abc123"
+     "v2"
     ],
     null
    ],
@@ -264,7 +268,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -280,7 +284,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -289,6 +293,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=web",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -302,7 +308,7 @@
      "inspect",
      "--format",
      "{{.State.Health.Status}}",
-     "new_web_222"
+     "web003"
     ],
     null
    ],
@@ -312,7 +318,7 @@
      "stop",
      "--time",
      "30",
-     "new_web_222"
+     "web003"
     ],
     null
    ],
@@ -320,7 +326,7 @@
     [
      "docker",
      "rm",
-     "new_web_222"
+     "web003"
     ],
     null
    ],
@@ -336,7 +342,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -344,7 +350,7 @@
      "git",
      "checkout",
      "--detach",
-     "prev123"
+     "prev123abc"
     ],
     null
    ]
@@ -383,7 +389,7 @@
      "git",
      "checkout",
      "--detach",
-     "abc123"
+     "v2"
     ],
     null
    ],
@@ -403,7 +409,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -419,7 +425,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -428,6 +434,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=web",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -441,7 +449,7 @@
      "inspect",
      "--format",
      "{{.State.Health.Status}}",
-     "new_web_222"
+     "web003"
     ],
     null
    ],
@@ -451,7 +459,7 @@
      "stop",
      "--time",
      "30",
-     "old_web_111"
+     "web001"
     ],
     null
    ],
@@ -459,7 +467,7 @@
     [
      "docker",
      "rm",
-     "old_web_111"
+     "web001"
     ],
     null
    ],
@@ -475,7 +483,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -486,7 +494,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -502,7 +510,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -511,6 +519,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=worker",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -524,7 +534,7 @@
      "inspect",
      "--format",
      "{{.State.Health.Status}}",
-     "new_wrk_444"
+     "worker004"
     ],
     null
    ],
@@ -534,7 +544,7 @@
      "stop",
      "--time",
      "30",
-     "new_wrk_444"
+     "worker004"
     ],
     null
    ],
@@ -542,7 +552,7 @@
     [
      "docker",
      "rm",
-     "new_wrk_444"
+     "worker004"
     ],
     null
    ],
@@ -558,7 +568,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -566,7 +576,7 @@
      "git",
      "checkout",
      "--detach",
-     "prev123"
+     "prev123abc"
     ],
     null
    ]
@@ -605,7 +615,7 @@
      "git",
      "checkout",
      "--detach",
-     "abc123"
+     "v2"
     ],
     null
    ],
@@ -625,7 +635,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -633,7 +643,7 @@
      "git",
      "checkout",
      "--detach",
-     "prev123"
+     "prev123abc"
     ],
     null
    ]
@@ -672,7 +682,7 @@
      "git",
      "checkout",
      "--detach",
-     "abc123"
+     "v2"
     ],
     null
    ],
@@ -692,7 +702,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -708,7 +718,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -716,7 +726,7 @@
      "git",
      "checkout",
      "--detach",
-     "prev123"
+     "prev123abc"
     ],
     null
    ]
@@ -755,7 +765,7 @@
      "git",
      "checkout",
      "--detach",
-     "abc123"
+     "v2"
     ],
     null
    ],
@@ -775,7 +785,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -791,7 +801,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -800,6 +810,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=web",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -819,7 +831,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -827,7 +839,7 @@
      "git",
      "checkout",
      "--detach",
-     "prev123"
+     "prev123abc"
     ],
     null
    ]
@@ -866,7 +878,7 @@
      "git",
      "checkout",
      "--detach",
-     "abc123"
+     "v2"
     ],
     null
    ],
@@ -886,7 +898,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -902,7 +914,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -911,6 +923,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=web",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -930,7 +944,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -938,7 +952,7 @@
      "git",
      "checkout",
      "--detach",
-     "prev123"
+     "prev123abc"
     ],
     null
    ]
@@ -977,7 +991,7 @@
      "git",
      "checkout",
      "--detach",
-     "abc123"
+     "v2"
     ],
     null
    ],
@@ -997,7 +1011,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1013,7 +1027,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1022,6 +1036,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=web",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -1035,7 +1051,7 @@
      "inspect",
      "--format",
      "{{.State.Health.Status}}",
-     "new_web_222"
+     "web003"
     ],
     null
    ],
@@ -1045,7 +1061,7 @@
      "stop",
      "--time",
      "30",
-     "old_web_111"
+     "web001"
     ],
     null
    ],
@@ -1053,7 +1069,7 @@
     [
      "docker",
      "rm",
-     "old_web_111"
+     "web001"
     ],
     null
    ],
@@ -1069,7 +1085,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1080,7 +1096,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1096,7 +1112,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1105,6 +1121,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=worker",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -1118,7 +1136,7 @@
      "inspect",
      "--format",
      "{{.State.Health.Status}}",
-     "new_wrk_444"
+     "worker004"
     ],
     null
    ],
@@ -1128,7 +1146,7 @@
      "stop",
      "--time",
      "30",
-     "old_wrk_333"
+     "worker002"
     ],
     null
    ],
@@ -1136,7 +1154,7 @@
     [
      "docker",
      "rm",
-     "old_wrk_333"
+     "worker002"
     ],
     null
    ],
@@ -1152,7 +1170,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ]
   ],
@@ -1190,7 +1208,7 @@
      "git",
      "checkout",
      "--detach",
-     "abc123"
+     "v2"
     ],
     null
    ],
@@ -1210,7 +1228,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1226,7 +1244,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1235,6 +1253,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=web",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -1248,7 +1268,7 @@
      "inspect",
      "--format",
      "{{.State.Health.Status}}",
-     "new_web_222"
+     "web003"
     ],
     null
    ],
@@ -1258,7 +1278,7 @@
      "stop",
      "--time",
      "30",
-     "old_web_111"
+     "web001"
     ],
     null
    ],
@@ -1266,7 +1286,7 @@
     [
      "docker",
      "rm",
-     "old_web_111"
+     "web001"
     ],
     null
    ],
@@ -1282,7 +1302,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1293,7 +1313,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1309,7 +1329,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1318,6 +1338,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=worker",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -1331,7 +1353,7 @@
      "stop",
      "--time",
      "30",
-     "old_wrk_333"
+     "worker002"
     ],
     null
    ],
@@ -1339,7 +1361,7 @@
     [
      "docker",
      "rm",
-     "old_wrk_333"
+     "worker002"
     ],
     null
    ],
@@ -1355,7 +1377,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ]
   ],
@@ -1393,7 +1415,7 @@
      "git",
      "checkout",
      "--detach",
-     "abc123"
+     "v2"
     ],
     null
    ],
@@ -1413,7 +1435,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1429,7 +1451,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1438,6 +1460,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=worker",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -1451,7 +1475,7 @@
      "inspect",
      "--format",
      "{{.State.Health.Status}}",
-     "new_wrk_444"
+     "worker003"
     ],
     null
    ],
@@ -1461,7 +1485,7 @@
      "stop",
      "--time",
      "30",
-     "old_wrk_333"
+     "worker002"
     ],
     null
    ],
@@ -1469,7 +1493,7 @@
     [
      "docker",
      "rm",
-     "old_wrk_333"
+     "worker002"
     ],
     null
    ],
@@ -1485,7 +1509,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ]
   ],
@@ -1542,7 +1566,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "head456"
+     "DEPLOY_TAG": "prev123abc"
     }
    ],
    [
@@ -1558,7 +1582,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "head456"
+     "DEPLOY_TAG": "prev123abc"
     }
    ],
    [
@@ -1567,6 +1591,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=web",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -1580,7 +1606,7 @@
      "inspect",
      "--format",
      "{{.State.Health.Status}}",
-     "new_web_222"
+     "web003"
     ],
     null
    ],
@@ -1590,7 +1616,7 @@
      "stop",
      "--time",
      "30",
-     "old_web_111"
+     "web001"
     ],
     null
    ],
@@ -1598,7 +1624,7 @@
     [
      "docker",
      "rm",
-     "old_web_111"
+     "web001"
     ],
     null
    ],
@@ -1614,7 +1640,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "head456"
+     "DEPLOY_TAG": "prev123abc"
     }
    ],
    [
@@ -1625,7 +1651,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "head456"
+     "DEPLOY_TAG": "prev123abc"
     }
    ],
    [
@@ -1641,7 +1667,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "head456"
+     "DEPLOY_TAG": "prev123abc"
     }
    ],
    [
@@ -1650,6 +1676,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=worker",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -1663,7 +1691,7 @@
      "inspect",
      "--format",
      "{{.State.Health.Status}}",
-     "new_wrk_444"
+     "worker004"
     ],
     null
    ],
@@ -1673,7 +1701,7 @@
      "stop",
      "--time",
      "30",
-     "old_wrk_333"
+     "worker002"
     ],
     null
    ],
@@ -1681,7 +1709,7 @@
     [
      "docker",
      "rm",
-     "old_wrk_333"
+     "worker002"
     ],
     null
    ],
@@ -1697,7 +1725,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "head456"
+     "DEPLOY_TAG": "prev123abc"
     }
    ]
   ],
@@ -1735,7 +1763,7 @@
      "git",
      "checkout",
      "--detach",
-     "abc123"
+     "v2"
     ],
     null
    ],
@@ -1755,7 +1783,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1763,7 +1791,7 @@
      "git",
      "checkout",
      "--detach",
-     "prev123"
+     "prev123abc"
     ],
     null
    ]
@@ -1802,7 +1830,7 @@
      "git",
      "checkout",
      "--detach",
-     "abc123"
+     "v2"
     ],
     null
    ],
@@ -1822,7 +1850,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1838,7 +1866,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1847,6 +1875,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=web",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -1860,7 +1890,7 @@
      "inspect",
      "--format",
      "{{.State.Health.Status}}",
-     "new_web_222"
+     "web003"
     ],
     null
    ],
@@ -1870,7 +1900,7 @@
      "stop",
      "--time",
      "30",
-     "old_web_111"
+     "web001"
     ],
     null
    ],
@@ -1878,7 +1908,7 @@
     [
      "docker",
      "rm",
-     "old_web_111"
+     "web001"
     ],
     null
    ],
@@ -1894,7 +1924,7 @@
      "web"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1905,7 +1935,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1921,7 +1951,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ],
    [
@@ -1930,6 +1960,8 @@
      "ps",
      "--filter",
      "label=com.docker.compose.service=worker",
+     "--filter",
+     "label=com.docker.compose.project=proj",
      "--filter",
      "status=running",
      "--format",
@@ -1943,7 +1975,7 @@
      "inspect",
      "--format",
      "{{.State.Health.Status}}",
-     "new_wrk_444"
+     "worker005"
     ],
     null
    ],
@@ -1953,7 +1985,7 @@
      "stop",
      "--time",
      "30",
-     "old_wrk_333"
+     "worker002"
     ],
     null
    ],
@@ -1961,7 +1993,7 @@
     [
      "docker",
      "rm",
-     "old_wrk_333"
+     "worker002"
     ],
     null
    ],
@@ -1977,7 +2009,7 @@
      "worker"
     ],
     {
-     "DEPLOY_TAG": "abc123"
+     "DEPLOY_TAG": "v2"
     }
    ]
   ],
@@ -2029,7 +2061,7 @@
      "git",
      "checkout",
      "--detach",
-     "abc123"
+     "v2"
     ],
     null
    ],
@@ -2046,7 +2078,7 @@
      "git",
      "checkout",
      "--detach",
-     "prev123"
+     "prev123abc"
     ],
     null
    ]

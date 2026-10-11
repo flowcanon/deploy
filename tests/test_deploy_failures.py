@@ -1,29 +1,39 @@
-"""Failure paths: signals, crashes, cleanup failures, and their exit codes."""
+"""Failure paths on a FakeHost: signals, crashes, cleanup failures, exit codes."""
 
 import signal
 
 import pytest
 
 from flow_deploy import deploy as deploy_mod
-from flow_deploy.deploy import EXIT_DEGRADED, EXIT_FAILED, _image_tag, _wait_for_healthy, deploy
-from tests.test_deploy import (
-    COMPOSE_CMD,
-    COMPOSE_CONFIG_YAML,
-    WEB_CONTAINER_NEW,
-    WEB_CONTAINER_OLD,
-    _chdir,
-    _err,
-    _git_preflight,
-    _ok,
-)
-from tests.test_drain_first import COMPOSE_CONFIG_YAML as DRAIN_CONFIG
-from tests.test_drain_first import WORKER_DRAIN, WORKER_NEW, _commands
-
-WEB_ONLY = ["web"]
+from flow_deploy.deploy import EXIT_DEGRADED, EXIT_FAILED, _wait_for_healthy, deploy
+from tests.fake_host import COMPOSE_CMD, FakeHost
+from tests.helpers import DRAIN, ROLLING, app, chdir, stack
 
 
-def _lock_released(tmp_path):
+def send(signum):
+    """Deliver ``signum`` to the current handler, as the kernel would mid-command."""
+    return lambda: signal.getsignal(signum)(signum, None)
+
+
+def lock_released(tmp_path):
     return not (tmp_path / ".git" / "deploy-lock").exists()
+
+
+@pytest.fixture
+def drain_host(monkeypatch, tmp_path):
+    chdir(monkeypatch, tmp_path)
+    host = FakeHost(DRAIN, running={"web": ["v1"], "scheduler": ["v1"], "worker": ["v1"]})
+    return host.install(monkeypatch)
+
+
+@pytest.fixture
+def rolling_host(monkeypatch, tmp_path):
+    chdir(monkeypatch, tmp_path)
+    return FakeHost(ROLLING, running={"web": ["v1"], "worker": ["v1"]}).install(monkeypatch)
+
+
+def v1(host, *services):
+    return {s: [host.images["v1"]] for s in services}
 
 
 # ---------------------------------------------------------------------------
@@ -31,113 +41,60 @@ def _lock_released(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_sigterm_mid_deploy_restores_drained_and_releases(mock_process, monkeypatch, tmp_path):
-    _chdir(monkeypatch, tmp_path)
-    original = signal.getsignal(signal.SIGTERM)
-
-    def cancelled(*args, **kwargs):
-        # What a cancelled CI job delivers while web is rolling.
-        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
-
-    monkeypatch.setattr(deploy_mod, "_deploy_service", cancelled)
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(DRAIN_CONFIG),
-            *WORKER_DRAIN,
-            _ok(),  # git restore
-            _ok(),  # worker: restore on old tag
-        ]
-    )
-    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
-    assert mock_process.calls[-1][2] == {"DEPLOY_TAG": "v1.2.0"}
-    assert _lock_released(tmp_path)
-    assert signal.getsignal(signal.SIGTERM) is original
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
+def test_signal_mid_roll_reverts_everything(drain_host, tmp_path, signum):
+    original = signal.getsignal(signum)
+    drain_host.before("--scale web=2", send(signum))
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert drain_host.running_images() == v1(drain_host, "web", "scheduler", "worker")
+    assert drain_host.sha == "prev123abc"
+    assert lock_released(tmp_path)
+    assert signal.getsignal(signum) is original
 
 
-def test_sighup_from_a_dropped_ssh_session_reverts(mock_process, monkeypatch, tmp_path):
-    _chdir(monkeypatch, tmp_path)
-
-    def hung_up(*args, **kwargs):
-        signal.getsignal(signal.SIGHUP)(signal.SIGHUP, None)
-
-    monkeypatch.setattr(deploy_mod, "_deploy_service", hung_up)
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(DRAIN_CONFIG),
-            *WORKER_DRAIN,
-            _ok(),  # git restore
-            _ok(),  # worker: restore
-        ]
-    )
-    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
-    assert mock_process.calls[-1][2] == {"DEPLOY_TAG": "v1.2.0"}
+def test_signal_while_a_drain_is_stopping_waits_for_it_then_reverts(drain_host, capsys):
+    """Held until the container has stopped and been removed, then reverted."""
+    drain_host.before("docker stop --time 3660 worker", send(signal.SIGINT))
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert "finishing the drain of worker0" in capsys.readouterr().out
+    cmds = drain_host.commands()
+    stop = drain_host.index("docker stop --time 3660 worker")
+    assert cmds[stop + 1].startswith("docker rm worker")  # the stop and rm finished
+    assert drain_host.running_images() == v1(drain_host, "web", "scheduler", "worker")
 
 
-def test_signal_while_a_drain_is_stopping_still_restores(mock_process, monkeypatch, tmp_path):
-    """A drain can take an hour: a cancel mid-stop must still know what to restore."""
-    _chdir(monkeypatch, tmp_path)
+def test_a_second_signal_during_a_held_drain_is_also_held(drain_host):
+    def two():
+        send(signal.SIGINT)()
+        send(signal.SIGTERM)()
 
-    def stop_interrupted(container_id, timeout=30, isolate=False):
-        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
-
-    monkeypatch.setattr(deploy_mod.containers, "stop_container", stop_interrupted)
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(DRAIN_CONFIG),
-            _ok(),  # worker: pull
-            WORKER_DRAIN[1],  # worker: docker ps
-            _ok(),  # git restore
-            _ok(),  # worker: restore
-        ]
-    )
-    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
-    assert "--scale worker=1 worker" in _commands(mock_process)[-1]
-    assert mock_process.calls[-1][2] == {"DEPLOY_TAG": "v1.2.0"}
+    drain_host.before("docker stop --time 3660 worker", two)
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == EXIT_FAILED
 
 
-def test_signals_are_ignored_while_reverting(mock_process, monkeypatch, tmp_path):
-    """A second signal mid-revert neither cuts it short nor starts another."""
-    _chdir(monkeypatch, tmp_path)
+def test_signals_are_ignored_while_reverting(drain_host):
     seen = []
-
-    def restore(drained, compose_cmd):
-        seen.append(signal.getsignal(signal.SIGTERM))
-        return True
-
-    monkeypatch.setattr(deploy_mod, "_restore_drained", restore)
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(DRAIN_CONFIG),
-            *WORKER_DRAIN,
-            _err("pull failed"),  # web: pull
-            _ok(),  # git restore
-        ]
+    drain_host.unpullable.add("v2")
+    drain_host.before(
+        "git checkout --detach prev123abc", lambda: seen.append(signal.getsignal(signal.SIGTERM))
     )
-    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == EXIT_FAILED
     assert seen == [signal.SIG_IGN]
 
 
-def test_signal_while_taking_the_lock_changes_nothing(mock_process, monkeypatch, tmp_path):
+def test_signal_while_taking_the_lock_changes_nothing(monkeypatch, tmp_path):
     """Handlers are installed before the lock, so even this signal is handled."""
-    _chdir(monkeypatch, tmp_path)
+    chdir(monkeypatch, tmp_path)
+    host = FakeHost(ROLLING).install(monkeypatch)
     released = []
-
-    def acquire_interrupted():
-        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
-
-    monkeypatch.setattr(deploy_mod.lock, "acquire", acquire_interrupted)
+    monkeypatch.setattr(deploy_mod.lock, "acquire", send(signal.SIGTERM))
     monkeypatch.setattr(deploy_mod.lock, "release", lambda: released.append(True))
-    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
-    assert mock_process.calls == []
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert host.calls == []
     assert released == []  # never held, so never released
 
 
-def test_finally_ignores_signals_while_releasing(mock_process, monkeypatch, tmp_path):
-    _chdir(monkeypatch, tmp_path)
+def test_finally_ignores_signals_while_releasing(rolling_host, monkeypatch):
     original = signal.getsignal(signal.SIGHUP)
     during_release = []
     real_release = deploy_mod.lock.release
@@ -147,100 +104,39 @@ def test_finally_ignores_signals_while_releasing(mock_process, monkeypatch, tmp_
         real_release()
 
     monkeypatch.setattr(deploy_mod.lock, "release", release)
-    mock_process.responses.extend([*_git_preflight(), _ok(COMPOSE_CONFIG_YAML), *_web_roll()])
-    assert deploy(tag="abc123", services_filter=WEB_ONLY, cmd=COMPOSE_CMD) == 0
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == 0
     assert during_release == [signal.SIG_IGN]
     assert signal.getsignal(signal.SIGHUP) is original
 
 
-def _web_roll():
-    return [
-        _ok(),  # web: pull
-        _ok(),  # web: scale to 2
-        _ok(WEB_CONTAINER_OLD + "\n" + WEB_CONTAINER_NEW + "\n"),  # web: ps
-        _ok("healthy\n"),  # web: health
-        _ok(),  # web: stop old
-        _ok(),  # web: rm old
-        _ok(),  # web: scale back
-    ]
-
-
-def test_unexpected_exception_reverts(mock_process, monkeypatch, tmp_path, capsys):
-    _chdir(monkeypatch, tmp_path)
-
+def test_unexpected_exception_reverts(drain_host, monkeypatch, capsys):
     def boom(*args, **kwargs):
         raise KeyError("Image")
 
     monkeypatch.setattr(deploy_mod, "_deploy_service", boom)
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(DRAIN_CONFIG),
-            *WORKER_DRAIN,
-            _ok(),  # git restore
-            _ok(),  # worker: restore
-        ]
-    )
-    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == EXIT_FAILED
     assert "unexpected error: KeyError('Image'); reverting" in capsys.readouterr().err
-    assert mock_process.calls[-1][2] == {"DEPLOY_TAG": "v1.2.0"}
-    assert _lock_released(tmp_path)
+    assert drain_host.running_images() == v1(drain_host, "web", "scheduler", "worker")
 
 
-def test_exception_before_checkout_skips_git_restore(mock_process, monkeypatch, tmp_path):
-    _chdir(monkeypatch, tmp_path)
+def test_exception_before_checkout_skips_git_restore(monkeypatch, tmp_path):
+    chdir(monkeypatch, tmp_path)
+    host = FakeHost(ROLLING).install(monkeypatch)
 
     def broken(_tag):
         raise OSError("git not found")
 
     monkeypatch.setattr(deploy_mod.git, "preflight_and_checkout", broken)
-    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
-    assert mock_process.calls == []  # nothing to restore
-    assert _lock_released(tmp_path)
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert host.calls == []
+    assert lock_released(tmp_path)
 
 
-def test_interrupt_during_start_keeps_already_started_services(mock_process, monkeypatch, tmp_path):
-    """Services healthy on the new tag stay; only unstarted ones are restored."""
-    _chdir(monkeypatch, tmp_path)
-    two = DRAIN_CONFIG + (
-        "  scheduler:\n"
-        "    image: ghcr.io/myorg/myapp:latest\n"
-        "    labels:\n"
-        "      deploy.role: app\n"
-        "      deploy.strategy: drain-first\n"
-        '      deploy.order: "300"\n'
-        "    healthcheck:\n"
-        '      test: ["CMD", "true"]\n'
-    )
-    real_start = deploy_mod._start_service
-
-    def start(svc, *args, **kwargs):
-        if svc.name == "scheduler":
-            signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
-        return real_start(svc, *args, **kwargs)
-
-    monkeypatch.setattr(deploy_mod, "_start_service", start)
-    monkeypatch.setattr(deploy_mod, "_deploy_service", lambda *a, **kw: 0)
-    sched_old = '{"ID": "old_sch_666", "Image": "ghcr.io/myorg/myapp:v1.1.0"}'
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(two),
-            _ok(),  # scheduler: pull
-            _ok(sched_old + "\n"),  # scheduler: ps
-            _ok(),  # scheduler: stop
-            _ok(),  # scheduler: rm
-            *WORKER_DRAIN,
-            _ok(),  # worker: compose up
-            _ok(WORKER_NEW + "\n"),  # worker: ps
-            _ok("healthy\n"),  # worker: health
-            _ok(),  # git restore
-            _ok(),  # scheduler: restore
-        ]
-    )
-    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
-    restores = [c for c in mock_process.calls if c[2] and c[2]["DEPLOY_TAG"] != "abc123"]
-    assert [c[2]["DEPLOY_TAG"] for c in restores] == ["v1.1.0"]  # scheduler only
+def test_interrupt_during_start_reverts_services_already_started(drain_host):
+    drain_host.before("--scale worker=1 worker", send(signal.SIGINT))
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == EXIT_FAILED
+    # The scheduler was already healthy on v2; it goes back with the rest.
+    assert drain_host.running_images() == v1(drain_host, "web", "scheduler", "worker")
 
 
 # ---------------------------------------------------------------------------
@@ -248,203 +144,62 @@ def test_interrupt_during_start_keeps_already_started_services(mock_process, mon
 # ---------------------------------------------------------------------------
 
 
-def test_rolling_abort_cleanup_failure_is_degraded(mock_process, monkeypatch, tmp_path, capsys):
-    _chdir(monkeypatch, tmp_path)
-    monkeypatch.setattr(deploy_mod, "_wait_for_healthy", lambda *a, **kw: False)
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(COMPOSE_CONFIG_YAML),
-            _ok(),  # web: pull
-            _ok(),  # web: scale to 2
-            _ok(WEB_CONTAINER_OLD + "\n" + WEB_CONTAINER_NEW + "\n"),  # web: ps
-            _err("stop failed"),  # web: stop new
-            _ok(),  # web: rm new
-            _ok(),  # web: scale back
-            _ok(),  # git restore
-        ]
-    )
-    result = deploy(tag="abc123", services_filter=WEB_ONLY, cmd=COMPOSE_CMD)
+def test_rolling_abort_cleanup_failure_is_degraded(rolling_host, capsys):
+    rolling_host.unhealthy_services.add(("web", "v2"))
+    rolling_host.fail("docker stop --time 30 web003")  # the new container won't stop
+    result = deploy(tag="v2", services_filter=["web"], cmd=COMPOSE_CMD)
     assert result == EXIT_DEGRADED
     captured = capsys.readouterr()
-    assert "abort incomplete: new container new_web" in captured.out
+    assert "abort incomplete: new container web003" in captured.out
     assert "cleanup failed for web" in captured.err
 
 
-def test_rolling_cutover_cleanup_failure_still_succeeds(
-    mock_process, monkeypatch, tmp_path, capsys
-):
-    """As on master: the new container is healthy and serving, so it's a success.
-
-    The usual cause is the old container having exited on its own; failing
-    here would revert the repo underneath a healthy new container.
-    """
-    _chdir(monkeypatch, tmp_path)
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(COMPOSE_CONFIG_YAML),
-            _ok(),  # web: pull
-            _ok(),  # web: scale to 2
-            _ok(WEB_CONTAINER_OLD + "\n" + WEB_CONTAINER_NEW + "\n"),  # web: ps
-            _ok("healthy\n"),  # web: health
-            _err("No such container"),  # web: stop old
-            _ok(),  # web: rm old
-            _ok(),  # web: scale back
-        ]
-    )
-    assert deploy(tag="abc123", services_filter=WEB_ONLY, cmd=COMPOSE_CMD) == 0
+def test_rolling_cutover_cleanup_failure_still_succeeds(rolling_host, capsys):
+    """As on master: the new container is healthy and serving, so it's a success."""
+    rolling_host.fail("docker stop --time 30 web001")  # e.g. the old container already exited
+    assert deploy(tag="v2", services_filter=["web"], cmd=COMPOSE_CMD) == 0
     captured = capsys.readouterr()
-    assert "warning: cleanup of old container old_web" in captured.out
+    assert "warning: cleanup of old container web001 did not complete" in captured.out
     assert "::error::" not in captured.out
 
 
-def test_rolling_scale_up_failure_issues_no_further_commands(mock_process, monkeypatch, tmp_path):
-    """As on master: no scale-back after a failed scale-up."""
-    _chdir(monkeypatch, tmp_path)
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(COMPOSE_CONFIG_YAML),
-            _ok(),  # web: pull
-            _err("port in use"),  # web: scale to 2
-            _ok(),  # git restore
-        ]
-    )
-    assert deploy(tag="abc123", services_filter=WEB_ONLY, cmd=COMPOSE_CMD) == EXIT_FAILED
-    assert not any("--scale web=1" in c for c in _commands(mock_process))
+def test_rolling_scale_up_failure_issues_no_further_commands(rolling_host):
+    rolling_host.fail("--scale web=2 web", times=1)
+    assert deploy(tag="v2", services_filter=["web"], cmd=COMPOSE_CMD) == EXIT_FAILED
+    assert not any("--scale web=1" in c for c in rolling_host.commands())
 
 
-@pytest.mark.parametrize(("scale_back", "expected"), [(_ok(), 1), (_err("busy"), 3)])
+@pytest.mark.parametrize("scale_back_fails, expected", [(False, 1), (True, 3)])
 def test_rolling_unidentifiable_containers_scale_back(
-    mock_process, monkeypatch, tmp_path, scale_back, expected
+    monkeypatch, tmp_path, scale_back_fails, expected
 ):
-    _chdir(monkeypatch, tmp_path)
-    twin = '{"ID": "%s", "Image": "ghcr.io/myorg/myapp:abc123", "CreatedAt": "2024-01-01"}'
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(COMPOSE_CONFIG_YAML),
-            _ok(),  # web: pull
-            _ok(),  # web: scale to 2
-            _ok(twin % "a1" + "\n" + twin % "b2" + "\n"),  # web: ps (same tag, same time)
-            scale_back,  # web: scale back
-            _ok(),  # git restore
-        ]
-    )
-    assert deploy(tag="abc123", services_filter=WEB_ONLY, cmd=COMPOSE_CMD) == expected
+    chdir(monkeypatch, tmp_path)
+    host = FakeHost(stack(web=app()), running={"web": ["v2"]}).install(monkeypatch)
+    # Same tag on both, so old and new are told apart by CreatedAt: make them equal.
+    monkeypatch.setattr(deploy_mod.containers, "identify_old_new", lambda ctrs, tag: (None, None))
+    if scale_back_fails:
+        host.fail("--scale web=1 web")
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == expected
 
 
-def test_start_cannot_list_containers_is_degraded(mock_process, monkeypatch, tmp_path):
+def test_start_cannot_list_containers_is_degraded(drain_host):
     """Couldn't see what started, so couldn't remove it: exit 3, not a clean revert."""
-    _chdir(monkeypatch, tmp_path)
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(DRAIN_CONFIG),
-            *WORKER_DRAIN,
-            _ok(),  # worker: compose up
-            _err("Cannot connect to the Docker daemon"),  # worker: docker ps
-            _ok(),  # git restore
-            _ok(),  # worker: restore
-        ]
-    )
-    result = deploy(tag="abc123", services_filter=["worker"], cmd=COMPOSE_CMD)
-    assert result == EXIT_DEGRADED
-    start_ps = [c for c in _commands(mock_process) if c.startswith("docker ps")][-1]
-    assert "--filter status=running --filter status=restarting" in start_ps
+    drain_host.fail("--filter label=com.docker.compose.service=worker", skip=2, times=1)
+    assert deploy(tag="v2", services_filter=["worker"], cmd=COMPOSE_CMD) == EXIT_DEGRADED
 
 
-def test_signal_during_rolling_only_deploy_restores_git(mock_process, monkeypatch, tmp_path):
-    """Deliberate change from master (which released the lock and exited 1
-    without restoring): a signal now also puts the repo back."""
-    _chdir(monkeypatch, tmp_path)
-
-    def cancelled(*args, **kwargs):
-        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
-
-    monkeypatch.setattr(deploy_mod, "_deploy_service", cancelled)
-    mock_process.responses.extend([*_git_preflight(), _ok(COMPOSE_CONFIG_YAML), _ok()])
-    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
-    assert _commands(mock_process)[-1] == "git checkout --detach prev123abc"
-    assert _lock_released(tmp_path)
+@pytest.mark.parametrize("command", ["docker stop --time 3660 worker", "docker rm worker"])
+def test_failed_start_that_cannot_be_removed_is_degraded(drain_host, command):
+    drain_host.unhealthy_services.add(("worker", "v2"))
+    drain_host.fail(command, skip=1)  # past the drain's own stop/rm
+    assert deploy(tag="v2", services_filter=["worker"], cmd=COMPOSE_CMD) == EXIT_DEGRADED
 
 
-def test_drain_aborts_when_docker_ps_fails(mock_process, monkeypatch, tmp_path, capsys):
-    """Couldn't list != nothing running: never roll past an unknown drain."""
-    _chdir(monkeypatch, tmp_path)
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(DRAIN_CONFIG),
-            _ok(),  # worker: pull
-            _err("Cannot connect to the Docker daemon"),  # worker: docker ps
-            _ok(),  # git restore
-        ]
-    )
-    assert deploy(tag="abc123", cmd=COMPOSE_CMD) == EXIT_FAILED
-    cmds = _commands(mock_process)
-    assert not any("--scale web=2" in c for c in cmds)
-    assert "not draining blind" in capsys.readouterr().out
-
-
-def test_drain_lists_restarting_containers_too(mock_process, monkeypatch, tmp_path):
-    _chdir(monkeypatch, tmp_path)
-    mock_process.responses.extend(
-        [*_git_preflight(), _ok(DRAIN_CONFIG), _ok(), _err("stop here"), _ok()]
-    )
-    deploy(tag="abc123", cmd=COMPOSE_CMD)
-    ps = next(c for c in _commands(mock_process) if c.startswith("docker ps"))
-    assert "--filter status=running --filter status=restarting" in ps
-
-
-@pytest.mark.parametrize(
-    ("stop", "rm"), [(_err("stuck"), _ok()), (_ok(), _err("in use"))], ids=["stop", "rm"]
-)
-def test_failed_start_that_cannot_be_removed_is_degraded(
-    mock_process, monkeypatch, tmp_path, stop, rm
-):
-    _chdir(monkeypatch, tmp_path)
-    monkeypatch.setattr(deploy_mod, "_wait_for_healthy", lambda *a, **kw: False)
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(DRAIN_CONFIG),
-            *WORKER_DRAIN,
-            _ok(),  # worker: compose up
-            _ok(WORKER_NEW + "\n"),  # worker: ps
-            stop,  # worker: stop unhealthy new
-            rm,  # worker: rm unhealthy new
-            _ok(),  # git restore
-            _ok(),  # worker: restore
-        ]
-    )
-    result = deploy(tag="abc123", services_filter=["worker"], cmd=COMPOSE_CMD)
-    assert result == EXIT_DEGRADED
-
-
-def test_start_scales_to_the_drained_replica_count(mock_process, monkeypatch, tmp_path):
-    _chdir(monkeypatch, tmp_path)
-    old2 = '{"ID": "old_wrk_555", "Image": "ghcr.io/myorg/myapp:v1.2.0"}'
-    new2 = '{"ID": "new_wrk_888", "Image": "ghcr.io/myorg/myapp:abc123"}'
-    mock_process.responses.extend(
-        [
-            *_git_preflight(),
-            _ok(DRAIN_CONFIG),
-            _ok(),  # worker: pull
-            _ok(WORKER_DRAIN[1].stdout.strip() + "\n" + old2 + "\n"),  # worker: ps (2)
-            _ok(),  # stop 1
-            _ok(),  # rm 1
-            _ok(),  # stop 2
-            _ok(),  # rm 2
-            _ok(),  # worker: compose up --scale worker=2
-            _ok(WORKER_NEW + "\n" + new2 + "\n"),  # worker: ps (2)
-            _ok("healthy\n"),  # worker 1: health
-            _ok("healthy\n"),  # worker 2: health
-        ]
-    )
-    assert deploy(tag="abc123", services_filter=["worker"], cmd=COMPOSE_CMD) == 0
-    assert any("--scale worker=2 worker" in c for c in _commands(mock_process))
+def test_start_scales_to_the_drained_replica_count(monkeypatch, tmp_path):
+    chdir(monkeypatch, tmp_path)
+    host = FakeHost(DRAIN, running={"worker": ["v1", "v1"]}).install(monkeypatch)
+    assert deploy(tag="v2", services_filter=["worker"], cmd=COMPOSE_CMD) == 0
+    assert host.running() == {"worker": ["v2", "v2"]}
 
 
 # ---------------------------------------------------------------------------
@@ -452,20 +207,13 @@ def test_start_scales_to_the_drained_replica_count(mock_process, monkeypatch, tm
 # ---------------------------------------------------------------------------
 
 
-def test_dry_run_compose_failure(mock_process, monkeypatch, tmp_path):
-    _chdir(monkeypatch, tmp_path)
-    mock_process.responses.append(_err("bad compose file"))
-    assert deploy(tag="abc123", dry_run=True, cmd=COMPOSE_CMD) == 1
+def test_dry_run_compose_failure(rolling_host):
+    rolling_host.fail("docker compose config")
+    assert deploy(tag="v2", dry_run=True, cmd=COMPOSE_CMD) == 1
 
 
-def test_dry_run_unknown_service(mock_process, monkeypatch, tmp_path):
-    _chdir(monkeypatch, tmp_path)
-    mock_process.responses.append(_ok(COMPOSE_CONFIG_YAML))
-    assert deploy(tag="abc123", dry_run=True, services_filter=["nope"], cmd=COMPOSE_CMD) == 1
-
-
-def test_image_tag_bare_id_has_no_tag():
-    assert _image_tag("sha256:0123abcd") is None
+def test_dry_run_unknown_service(rolling_host):
+    assert deploy(tag="v2", dry_run=True, services_filter=["nope"], cmd=COMPOSE_CMD) == 1
 
 
 def test_wait_for_healthy_returns_false_when_unhealthy(monkeypatch):

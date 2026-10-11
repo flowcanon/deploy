@@ -6,9 +6,34 @@ Flow Deploy includes a composite GitHub Action that handles host discovery, GHCR
 
 The deploy pipeline:
 
-1. CI builds your Docker image and pushes to GHCR
+1. CI builds your Docker image and pushes it to GHCR under the release version (when there is one) and the commit SHA
 2. The deploy action discovers hosts from your `docker-compose.yml`
-3. For each host: authenticates with GHCR and runs `flow-deploy deploy` (which handles git fetch and checkout internally)
+3. For each host: authenticates with GHCR and runs `flow-deploy deploy --tag <version or sha>` (which handles git fetch and checkout internally)
+
+## The Image Tag Contract
+
+The deploy tag is both the git ref checked out on the server and the image tag pulled, so:
+
+- **Push the image under every tag you deploy by.** Typically the version tag (`v1.4.0`) for releases and the full commit SHA for everything else. `:latest` is optional; flow-deploy never relies on it.
+- **Name every app image with `DEPLOY_TAG`**, directly or through `.env`:
+
+```yaml
+# docker-compose.yml
+services:
+  web:
+    image: ${DOCKER_IMAGE}
+```
+
+```sh
+# .env on the server
+DOCKER_IMAGE=ghcr.io/yourorg/yourproject:${DEPLOY_TAG:-latest}
+```
+
+A bare `DOCKER_IMAGE=ghcr.io/yourorg/yourproject` (no tag) always runs `:latest`, whatever you deploy; flow-deploy warns when it sees that.
+
+- **Use `flow-deploy compose` for manual commands on the server** (`flow-deploy compose up -d`, `flow-deploy compose run --rm web ...`). With `${DEPLOY_TAG:-latest}`, a plain `docker compose up -d` would move every service to `:latest`; `flow-deploy compose` sets `DEPLOY_TAG` to the deployed tag. Or have `script/prod` default it (see the README's Image Tags section).
+
+Version tags can be lightweight or annotated, and a re-pushed tag is picked up: flow-deploy runs `git fetch --tags --force`. If a deploy fails, every service goes back to the exact image it was running, whatever it was tagged.
 
 ## Prerequisites
 
@@ -41,17 +66,20 @@ cp .env.example .env
 # Edit with your values
 ```
 
-**3. Start the stack:**
-
-```sh
-docker compose up -d
-```
-
-**4. Install flow-deploy:**
+**3. Install flow-deploy:**
 
 ```sh
 curl -fsSL https://deploy.flowcanon.com/install | sh
 ```
+
+**4. Start the stack** at the version you're deploying (with `DEPLOY_TAG` unset, `${DEPLOY_TAG:-latest}` runs `:latest`):
+
+```sh
+git checkout --detach v1.4.0
+DEPLOY_TAG=v1.4.0 docker compose up -d
+```
+
+Or do the first deploy with flow-deploy itself: `flow-deploy deploy --tag v1.4.0`.
 
 From this point, CI handles all subsequent deploys.
 
@@ -98,7 +126,7 @@ Use the standalone action from [`flowcanon/deploy-action`](https://github.com/fl
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `tag` | Yes | — | Image tag to deploy |
+| `tag` | Yes | — | Tag to deploy: the version tag, or the commit SHA |
 | `ssh-key` | Yes | — | SSH private key |
 | `command` | No | `script/prod` | Compose command |
 | `host` | No | — | Override deploy host |
@@ -108,12 +136,15 @@ Use the standalone action from [`flowcanon/deploy-action`](https://github.com/fl
 
 ### Example Workflow
 
+Pushes to `master` deploy by commit SHA; pushing a version tag deploys that version.
+
 ```yaml
 name: Deploy
 
 on:
   push:
     branches: [master]
+    tags: ["v*"]
 
 env:
   IMAGE: ghcr.io/yourorg/yourproject
@@ -135,11 +166,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The version tag on tag pushes, and always the full SHA.
       - id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE }}
-          tags: type=sha,prefix=
+          tags: |
+            type=ref,event=tag
+            type=sha,format=long,prefix=
 
       - uses: docker/build-push-action@v6
         with:
@@ -149,13 +183,33 @@ jobs:
 
       - uses: flowcanon/deploy-action@master
         with:
-          tag: ${{ steps.meta.outputs.version }}
+          tag: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
           ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
           host: ${{ vars.HOST_NAME }}
           user: ${{ vars.HOST_USER }}
           ssh-port: ${{ vars.SSH_PORT }}
           registry-token: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+### Release workflows that create the tag
+
+When a release job creates the version tag itself (for example `salsify/action-detect-and-tag-new-version`, whose `tag` output is empty when no new version was detected), push the image under that tag and the SHA, and deploy by the tag with the SHA as the fallback:
+
+```yaml
+      - uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ needs.release.outputs.created-tag && format('{0}:{1}', env.IMAGE, needs.release.outputs.created-tag) || '' }}
+
+      - uses: flowcanon/deploy-action@master
+        with:
+          tag: ${{ needs.release.outputs.created-tag || github.sha }}
+          ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+```
+
+The tag must be pushed to the repository before the deploy runs, since flow-deploy fetches it on the server.
 
 ## What the Action Does
 
@@ -229,6 +283,15 @@ Pass `registry-token: ${{ secrets.GITHUB_TOKEN }}` to the deploy action. The job
 **`flow-deploy: command not found`:**
 Install it on the server: `curl -fsSL https://deploy.flowcanon.com/install | sh`
 Then start a new login shell or run `. ~/.profile`.
+
+**`warning: web's image (...) doesn't use DEPLOY_TAG`:**
+The rendered image doesn't end in `:<tag>`, so the deploy doesn't change what that service runs. Make the image (or `DOCKER_IMAGE` in `.env`) end in `:${DEPLOY_TAG:-latest}`.
+
+**`manifest unknown` pulling `<image>:v1.4.0`:**
+CI didn't push the image under that tag. Push the version tag as well as the SHA, or deploy by SHA.
+
+**`can't tell which tag is deployed`** from `flow-deploy tag` or `flow-deploy compose`:
+Services run different or untagged images, or nothing is running and no deploy is recorded. Set it explicitly: `DEPLOY_TAG=v1.4.0 flow-deploy compose up -d`.
 
 **Health check timeout:**
 Increase the timeout via label: `deploy.healthcheck.timeout: 300`. Check that your app's health endpoint responds within the Docker healthcheck interval.

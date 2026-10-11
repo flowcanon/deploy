@@ -7,7 +7,7 @@ import click
 
 from flow_deploy import __version__, compose
 from flow_deploy import deploy as deploy_mod
-from flow_deploy import discovery, log, process
+from flow_deploy import deployed, discovery, log, process
 
 
 @click.group()
@@ -31,7 +31,8 @@ def deploy(tag, service, dry_run):
 def status():
     """Show current state of all managed services."""
     try:
-        compose_dict = compose.compose_config()
+        compose_dict = compose.compose_config(env={"DEPLOY_TAG": deployed.LOOKUP_PLACEHOLDER})
+        tag, how = deployed.current()
     except RuntimeError as e:
         log.error(str(e))
         sys.exit(1)
@@ -42,6 +43,7 @@ def status():
     current_sha = git.current_sha()
 
     log.info(f"Current SHA: {current_sha[:7] if current_sha else '(none)'}")
+    log.info(f"Deployed tag: {tag} (from {how})" if tag else f"Deployed tag: unknown ({how})")
     log.info("")
 
     for svc in all_services:
@@ -55,6 +57,53 @@ def status():
                 log.info(f"  {svc.name} ({svc.role})  {cid}  {image}  {state}/{health or 'none'}")
         else:
             log.info(f"  {svc.name} ({svc.role})  no containers")
+
+
+@main.command(name="tag")
+def tag_cmd():
+    """Print the image tag deployed on this host.
+
+    From the running app containers when they agree, else the last deploy's
+    record. For scripts: DEPLOY_TAG=${DEPLOY_TAG:-$(flow-deploy tag)}.
+    """
+    try:
+        tag, how = deployed.current()
+    except RuntimeError as e:
+        log.error(str(e))
+        sys.exit(1)
+    if tag is None:
+        log.error(f"can't tell which tag is deployed: {how}")
+        sys.exit(1)
+    click.echo(tag)
+
+
+@main.command(
+    name="compose",
+    context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False},
+)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def compose_cmd(args):
+    """Run compose with DEPLOY_TAG set to the deployed tag.
+
+    For manual commands on the host (up -d, run --rm, ...), so they keep the
+    deployed version instead of moving services to :latest. An explicit
+    DEPLOY_TAG in the environment wins.
+    """
+    import os
+
+    command = compose.resolve_command()
+    tag = os.environ.get("DEPLOY_TAG")
+    if not tag:
+        try:
+            tag, how = deployed.current(command)
+        except RuntimeError as e:
+            log.error(str(e))
+            sys.exit(1)
+        if tag is None:
+            log.error(f"can't tell which tag is deployed: {how}")
+            sys.exit(1)
+        click.echo(f"DEPLOY_TAG={tag} (from {how})", err=True)
+    sys.exit(process.run_streaming(command + list(args), env={"DEPLOY_TAG": tag}))
 
 
 @main.command(name="exec", context_settings={"ignore_unknown_options": True})
