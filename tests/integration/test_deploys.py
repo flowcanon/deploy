@@ -137,6 +137,9 @@ def test_drain_that_hits_its_timeout_is_killed_and_the_deploy_continues(stack):
     assert "didn't exit on SIGTERM within 3s and was killed" in result.stderr
 
 
+SIGTERM_DELAY = 4
+
+
 @pytest.mark.parametrize(
     ("signame", "to_group"),
     [("SIGINT", False), ("SIGTERM", False), ("SIGINT", True)],
@@ -146,7 +149,9 @@ def test_signal_mid_drain_reverts(stack, signame, to_group):
     """to_group sends the signal to flow-deploy's whole process group, as a
     terminal's Ctrl-C does, so the docker stop child would get it too if it
     weren't in its own session."""
-    slow = service(300, "drain-first", drain=30, env={"STUB_SIGTERM_DELAY": "10"})
+    # The worker takes SIGTERM_DELAY to stop, so the signal (sent ~1s into the
+    # drain) lands while the drain's docker stop is still waiting.
+    slow = service(300, "drain-first", drain=30, env={"STUB_SIGTERM_DELAY": str(SIGTERM_DELAY)})
     stack.commit("v1", standard(worker=slow))
     stack.commit("v2", standard(worker=slow))
     stack.up("v1")
@@ -163,7 +168,7 @@ def test_signal_mid_drain_reverts(stack, signame, to_group):
     assert "finishing the drain" in out
     # Outlast the old worker's SIGTERM delay: a restore that only "saw" a
     # still-stopping container would leave nothing running once it exits.
-    time.sleep(12)
+    time.sleep(SIGTERM_DELAY + 2)
     assert_reverted(stack, ALL_V1, code, out)
 
 
@@ -220,7 +225,7 @@ def test_rolling_healthcheck_that_passes_late_still_deploys(stack):
     """A slow starter needs a start_period: without one Docker marks it
     unhealthy after `retries` failed checks, and flow-deploy aborts on that."""
     stack.commit("v1", standard())
-    slow_web = service(100, env={"STUB_HEALTH": "after:4"}, start_period="15s")
+    slow_web = service(100, env={"STUB_HEALTH": "after:3"}, start_period="8s")
     stack.commit("v2", standard(web=slow_web))
     stack.up("v1")
 
