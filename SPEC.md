@@ -10,7 +10,7 @@ A minimal, opinionated deployment tool for Docker Compose + Traefik stacks. Repl
 - **Two layers, clean split.** A server-side CLI (`flow-deploy`) handles the single-node deploy lifecycle — pull, scale, health check, cutover. A GitHub Action (`flow-deploy-action`) handles host discovery, fleet orchestration, and SSH fan-out. Single-host projects can skip the action entirely.
 - **Accessories are left alone.** Databases, caches, and other stateful services are never restarted during a deploy unless explicitly requested.
 - **Builds happen in CI.** The tool does not build images. GitHub Actions builds and pushes to GHCR. The tool pulls and swaps.
-- **Failure is a no-op.** If a new container fails its health check, the old container continues serving traffic untouched. The deploy exits nonzero.
+- **Failure is a no-op.** If a new container fails its health check, the old container continues serving traffic untouched. Any failure puts every app service back on the exact image it ran before the deploy, and the deploy exits nonzero.
 - **Logging is the interface.** All output is structured, human-readable, and designed to flow through an SSH session back into GitHub Actions logs.
 
 ---
@@ -29,17 +29,28 @@ Every service in `docker-compose.yml` is classified by a label:
 
 ### 2.2 Deploy Lifecycle
 
-The deploy runs as a single transaction — `flow-deploy deploy` owns the full lifecycle including git operations. When `--tag <sha>` is provided, the value serves double duty: it is both the Docker image tag and the git SHA to checkout. When `--tag` is omitted, the tool deploys the current HEAD — the git checkout is skipped and `DEPLOY_TAG` is set to the current commit SHA.
+The deploy runs as a single transaction — `flow-deploy deploy` owns the full lifecycle including git operations. When `--tag <tag>` is provided, the value serves double duty: it is both the Docker image tag and the git ref to checkout. It is normally a release version (`v1.4.0`); a commit SHA works too (§2.8). When `--tag` is omitted, the tool deploys the current HEAD — the git checkout is skipped and `DEPLOY_TAG` is set to the current commit SHA.
 
 **Pre-flight and git checkout (before any service work):**
 
 ```
 0a. Dirty check             git status --porcelain
                              If non-empty → log "working tree is dirty — deploy aborted", exit 1
-0b. Fetch                   git fetch origin
+0b. Fetch                   git fetch --tags --force origin
 0c. Record previous SHA     previous_sha = git rev-parse HEAD
-0d. Checkout (detached)     git checkout --detach <sha>   (skipped when --tag is omitted)
+0d. Checkout (detached)     git checkout --detach <tag>   (skipped when --tag is omitted)
+0e. Render config           DEPLOY_TAG=<tag> <compose-command> config
+0f. Project check            docker ps by compose's working_dir label: containers
+                             of another compose project here → refuse
+0g. Snapshot                for each app service: docker ps (running + restarting),
+                             docker inspect → image IDs; the most common one is
+                             "previous" (warn if they differ), aliased as
+                             docker tag <id> <repo>:flow-deploy-<full image id>
+                             in the config's repo and the container's own
+                             If any of this fails → restore repo, exit 1
 ```
+
+The snapshot is what a revert restores: the exact image each service was running, whatever tag (or none) it was started from (§2.8).
 
 **For each service with `deploy.role=app`, in the order they appear in the compose file:**
 
@@ -50,18 +61,41 @@ The deploy runs as a single transaction — `flow-deploy deploy` owns the full l
 4a. If healthy:
       Graceful shutdown      docker stop --time <drain> <old_id>
       Remove old container   docker rm <old_id>
-      Scale back to 1        <compose-command> up -d --no-deps --scale <service>=1
+      Scale back to 1        <compose-command> up -d --no-deps --no-recreate --scale <service>=1
+                             (skipped, with a warning, if the old one couldn't be removed)
       ✓ Continue to next service
 4b. If unhealthy:
       Stop new container     docker stop <new_id> && docker rm <new_id>
-      Scale back to 1        <compose-command> up -d --no-deps --scale <service>=1
-      Restore repo           git checkout --detach <previous_sha>
-      ✗ Abort deploy, exit 1
+      Scale back to 1        <compose-command> up -d --no-deps --no-recreate --scale <service>=1
+      ✗ Revert (below), exit 1
 ```
 
-**On success:** the server is in detached HEAD at `<sha>`. Log `HEAD detached at <sha>`.
+Services labelled `deploy.strategy=drain-first` are instead stopped before any rolling service and started after them; see §2.5.
 
-**On failure:** the repo is restored to `<previous_sha>` before exiting. The invariant is preserved: `git rev-parse HEAD` always matches the image SHA that is actively serving traffic.
+**On success:** the server is in detached HEAD at `<tag>`, and `.git/deploy-tag` records the tag (§2.8). Log `HEAD detached at <tag>`.
+
+**On failure** (a failed step, a signal, or an unexpected error), the deploy reverts:
+
+```
+R1. Restore repo             git checkout --detach <previous_sha>
+R1b. Failed service          remove stopped containers its abort couldn't remove
+R2. Roll back shipped        for each rolling service that already deployed, in reverse order:
+                               remove its stopped leftovers (compose would restart them), then
+                               DEPLOY_TAG=<alias> rolling deploy (no pull) back to its
+                               previous image; if a container on the previous image
+                               survived the cutover, remove the new ones instead;
+                               a service that had no containers is removed
+R3. Restore drain-first      for each drained service, in deploy order:
+                               remove its stopped leftovers on other images,
+                               stop + remove containers not on its previous image,
+                               DEPLOY_TAG=<alias> <compose-command> up -d --no-deps
+                                 --no-recreate --scale <service>=<previous replicas>
+                               (left stopped if it wasn't running before)
+R4. Record                   .git/deploy-tag = the restored alias (cleared if services differ)
+R5. Release the lock         always
+```
+
+Exit `1` if everything was put back, `3` if anything couldn't be (§4.1). The invariant is preserved: `git rev-parse HEAD` matches the code of the images actively serving traffic.
 
 Where `<compose-command>` is the project's compose wrapper (see §3.1).
 
@@ -90,13 +124,22 @@ Configuration (via labels on the service):
 
 ### 2.5 Deploy Order
 
-Services are deployed in the order they appear in `docker-compose.yml`. If a service fails, all subsequently listed services are skipped. Previously deployed services in the same run are NOT rolled back — they already passed health checks and are serving traffic. This matches the expand-then-contract migration discipline: each service should be independently deployable.
+Services are deployed in the order they appear in `docker-compose.yml`. If a service fails, all subsequently listed services are skipped, and services that already deployed in the same run are rolled back to their previous image (§2.2, R2), so no service runs new code beside others on old code. Old code then runs against whatever the new code did (a migration, say), which is the expand-then-contract discipline every rolling deploy already relies on.
 
 If explicit ordering is needed beyond file order, a label is available:
 
 | Label | Default | Description |
 |---|---|---|
 | `deploy.order` | `100` | Integer. Lower deploys first. Ties broken by file order. |
+| `deploy.strategy` | `rolling` | `rolling` or `drain-first` |
+
+**Drain-first services** (queue workers, schedulers) never overlap old and new. The deploy runs in three phases:
+
+1. **Drain** drain-first services in *reverse* `deploy.order`: pull the new image, then `docker stop --time <deploy.drain>` every running or restarting container, then remove it. Nothing rolls until every drain has finished.
+2. **Roll** rolling services in `deploy.order`, as above.
+3. **Start** drain-first services in `deploy.order` on the new tag, at their previous replica count (at least 1), each health-checked. Every start is attempted; a failure removes what it started.
+
+A failure in any phase reverts everything (§2.2). A signal that arrives while a drain is stopping a container is held until that container has stopped and been removed, then the deploy reverts.
 
 ### 2.6 Host Discovery
 
@@ -202,18 +245,30 @@ The GitHub Action (§7) reads these values by running `<compose-command> config`
 The tool needs to know which image tag to deploy. When `--tag` is omitted, the tool uses the current HEAD SHA — deploying whatever is currently checked out. When `--tag` is provided, the tool checks out that ref and uses it as the image tag:
 
 ```
-flow-deploy deploy --tag abc123f
+flow-deploy deploy --tag v1.4.0
+flow-deploy deploy --tag 3f2c9e1d...   # a commit SHA works the same way
 ```
 
-The `--tag` value temporarily overrides the image tag for all `deploy.role=app` services before pulling. This is implemented via the `DEPLOY_TAG` environment variable, which compose files can reference:
+**Git side.** Tags are fetched with `git fetch --tags --force origin`, so a new release tag is always present and a re-pushed (moved) tag updates locally. `git checkout --detach <tag>` accepts lightweight tags, annotated tags (it checks out the tagged commit), and SHAs.
+
+**Image side.** The `--tag` value is passed to every compose command as the `DEPLOY_TAG` environment variable, which each `deploy.role=app` image must end with:
 
 ```yaml
 services:
   web:
     image: ghcr.io/myorg/myapp:${DEPLOY_TAG:-latest}
+    # or image: ${DOCKER_IMAGE}, with DOCKER_IMAGE=ghcr.io/myorg/myapp:${DEPLOY_TAG:-latest} in .env
 ```
 
-The deployed SHA is always available via `git rev-parse HEAD` — the server is kept in detached HEAD at the deployed commit. The tool does not write any state files to the working tree.
+CI must push the image under every tag it may deploy by (the version, and the SHA as a fallback). The deploy renders its compose config with `DEPLOY_TAG` set and warns when an app image doesn't end in `:<tag>`; such a service keeps whatever image the compose file names.
+
+**What's running.** Restores never trust a tag name. The pre-deploy snapshot (§2.2, 0g) records each service's running image ID and tags it locally as `<repo>:flow-deploy-<image id>` (the full ID, so it can't collide), under both the new compose config's repo and the repo the container was started from. A revert deploys that alias, so it gets the exact image back even when the service was started from `:latest`, from a tag re-pushed since, from a digest, or untagged. If an alias can't be created the deploy stops before changing anything. Aliases are local only and are never pushed.
+
+**What's deployed.** `flow-deploy tag` (§4.7) answers "which tag is deployed here": the tag of the running app containers when they all agree; otherwise, when nothing is running, `.git/deploy-tag`. Mixed or untagged images are an error, never a guess. The record is written after every successful deploy of all app services, rewritten to the restored alias after a revert (running containers still take precedence: one that kept its old container shows its old tag), and cleared by a `--service` deploy that leaves some app services out (they're then on different tags).
+
+**Manual commands.** With `${DEPLOY_TAG:-latest}`, running `<compose-command> up -d` on the host with `DEPLOY_TAG` unset would move every service to `:latest`. Use `flow-deploy compose <args>` (§4.8), which sets `DEPLOY_TAG` to the deployed tag, or have the wrapper default it (§3.1).
+
+The deployed commit is always available via `git rev-parse HEAD` — the server is kept in detached HEAD at the deployed commit.
 
 ---
 
@@ -233,7 +288,7 @@ The tool expects a project directory containing a checked-out Git repository wit
 └── (application source)
 ```
 
-The tool writes no state files to the working tree. The deploy lock is stored at `.git/deploy-lock` (invisible to `git status`). The current deployed SHA is always `git rev-parse HEAD`.
+The tool writes no state files to the working tree. The deploy lock is stored at `.git/deploy-lock` and the deployed tag at `.git/deploy-tag` (both invisible to `git status`). The current deployed commit is always `git rev-parse HEAD`.
 
 ### 3.1 Compose Command Wrapper
 
@@ -254,13 +309,17 @@ A typical `script/prod`:
 docker compose -f docker-compose.yml -f docker-compose.prod.yml "$@"
 ```
 
-A wrapper that includes image tagging:
+A wrapper that keeps manual commands on the deployed tag (§2.8):
 
 ```bash
 #!/usr/bin/env bash
-DOCKER_IMAGE_TAG="${DOCKER_IMAGE_TAG:-latest}" \
-  docker compose -f docker-compose.yml -f docker-compose.prod.yml "$@"
+if [ -z "${DEPLOY_TAG:-}" ] && command -v flow-deploy >/dev/null; then
+  DEPLOY_TAG=$(flow-deploy tag 2>/dev/null) && export DEPLOY_TAG
+fi
+docker compose -f docker-compose.yml -f docker-compose.prod.yml "$@"
 ```
+
+`flow-deploy` always sets `DEPLOY_TAG` when it calls the wrapper (to a placeholder while looking up the tag), so the default never recurses.
 
 This pattern means the tool is completely agnostic about which compose files exist or how they're layered. The project defines its own composition strategy, and the tool just calls the wrapper with the appropriate subcommand arguments (`pull`, `up`, `stop`, etc.).
 
@@ -290,7 +349,7 @@ flow-deploy deploy [--tag TAG] [--service SERVICE] [--dry-run]
 
 | Flag | Description |
 |---|---|
-| `--tag TAG` | Image tag and git ref to deploy (defaults to current HEAD SHA) |
+| `--tag TAG` | Image tag and git ref to deploy: a version tag or a commit SHA (defaults to current HEAD SHA) |
 | `--service SERVICE` | Deploy only a specific service (repeatable) |
 | `--dry-run` | Show what would happen without executing |
 
@@ -298,9 +357,9 @@ Exit codes:
 - `0` — all services deployed successfully
 - `1` — deploy failed (dirty tree, git error, unhealthy service, etc.) and everything it touched was put back
 - `2` — deploy lock held by another process
-- `3` — deploy failed and could not be fully reverted (git restore or a service restore failed); the lock is still released
+- `3` — deploy failed and could not be fully reverted (the git restore, a rollback or restore, or a failed service's own cleanup failed); the lock is still released
 
-To deploy a previous version, run `flow-deploy deploy --tag <previous-sha>`. The SHA is always a git commit — find it in your CI history or via `git log` on the server.
+To deploy a previous version, run `flow-deploy deploy --tag <previous-version>` (or its SHA). Find it in your CI history, `git tag` on the server, or `flow-deploy status` before deploying.
 
 ### 4.2 `flow-deploy status`
 
@@ -310,7 +369,7 @@ Show the current state of all managed services.
 flow-deploy status
 ```
 
-Output includes: current HEAD SHA, service name, role, container ID, image tag, health status.
+Output includes: current HEAD SHA, the deployed tag and where it came from (§2.8), and per container: service name, role, container ID, image, health status.
 
 ### 4.3 `flow-deploy exec`
 
@@ -351,6 +410,27 @@ flow-deploy upgrade
 ```
 
 This detects the system's libc (musl or glibc), downloads the latest binary from the GitHub release, and atomically replaces the current binary. Works when run manually on the server or via SSH from a CI pipeline.
+
+### 4.7 `flow-deploy tag`
+
+Print the deployed tag (§2.8) to stdout, and nothing else, for scripts:
+
+```
+DEPLOY_TAG=${DEPLOY_TAG:-$(flow-deploy tag)}
+```
+
+Exits 1 with the reason on stderr when it can't tell (mixed or untagged images, or nothing running and no record).
+
+### 4.8 `flow-deploy compose`
+
+Run the compose command (§3.1) with `DEPLOY_TAG` set to the deployed tag, for manual operations on the host:
+
+```
+flow-deploy compose up -d
+flow-deploy compose run --rm web python manage.py migrate
+```
+
+An explicit `DEPLOY_TAG` in the environment wins. Refuses (exit 1) when the deployed tag can't be told, rather than fall back to `:latest`. The exit code is compose's.
 
 ---
 
@@ -449,6 +529,7 @@ name: Deploy
 on:
   push:
     branches: [main]
+    tags: ["v*"]
 
 env:
   REGISTRY: ghcr.io
@@ -461,7 +542,7 @@ jobs:
       contents: read
       packages: write
     outputs:
-      tag: ${{ steps.meta.outputs.version }}
+      tag: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -471,12 +552,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The version tag on release pushes, and always the full SHA.
       - id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
           tags: |
-            type=sha,prefix=
+            type=ref,event=tag
+            type=sha,format=long,prefix=
 
       - uses: docker/build-push-action@v5
         with:
@@ -614,6 +697,7 @@ The tool has zero configuration files. All behavior is controlled by `x-deploy` 
 | `deploy.port` | No | `x-deploy.port` | SSH port for this service |
 | `deploy.dir` | No | `x-deploy.dir` | Project directory on remote host |
 | `deploy.order` | No | `100` | Deploy order (lower first) |
+| `deploy.strategy` | No | `rolling` | `rolling` or `drain-first` (§2.5) |
 | `deploy.drain` | No | `30` | Seconds to wait after SIGTERM before SIGKILL |
 | `deploy.healthcheck.timeout` | No | `120` | Seconds before aborting |
 | `deploy.healthcheck.poll` | No | `2` | Seconds between polls |
@@ -652,7 +736,7 @@ All v1 design decisions are made with the v2 roadmap in mind. Specifically:
 - The single-command `flow-deploy deploy` is a convenience that runs prepare + health check + cutover in one shot. v2 splits this into discrete phases without breaking the v1 interface.
 - The `deploy.role` label convention is extensible — v2 adds behavior, not new classification schemes.
 - The compose command wrapper (§3.1) means the tool never makes assumptions about compose file structure, which keeps it compatible with arbitrarily complex service topologies.
-- The tool writes no state to the working tree. The deploy lock lives in `.git/deploy-lock`, and the current deployed SHA is always `git rev-parse HEAD`. v2 adds `.git/deploy-prepare` for two-phase state tracking.
+- The tool writes no state to the working tree. The deploy lock lives in `.git/deploy-lock`, the deployed tag in `.git/deploy-tag`, and the current deployed commit is always `git rev-parse HEAD`. v2 adds `.git/deploy-prepare` for two-phase state tracking.
 - Host discovery via `x-deploy` and `deploy.host` labels (§2.6) gives the GitHub Action enough information to orchestrate multi-host deploys in v1 (sequential) and v2 (two-phase coordinated).
 
 ---

@@ -105,6 +105,23 @@ def test_service_end_github_actions(capsys, monkeypatch):
     assert "::endgroup::" in out
 
 
+def test_warning(capsys):
+    from flow_deploy.log import warning
+
+    warning("heads up")
+    captured = capsys.readouterr()
+    assert "WARNING: heads up" in captured.err
+    assert "::warning::" not in captured.out
+
+
+def test_warning_github_actions_annotates(capsys, monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    from flow_deploy.log import warning
+
+    warning("heads up")
+    assert "::warning::heads up" in capsys.readouterr().out
+
+
 def test_error(capsys):
     from flow_deploy.log import error
 

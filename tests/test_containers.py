@@ -7,8 +7,13 @@ from flow_deploy.containers import (
     get_container_health,
     get_containers_for_service,
     identify_old_new,
+    image_ids,
+    image_repo,
+    image_tag,
+    other_projects_here,
     remove_container,
     stop_container,
+    tag_image,
 )
 
 
@@ -127,3 +132,93 @@ def test_remove_container(mock_process):
     assert remove_container("abc123") is True
     _, args, _, _ = mock_process.calls[0]
     assert args == ["docker", "rm", "abc123"]
+
+
+def test_image_tag():
+    assert image_tag("ghcr.io/org/app:v1.2.0") == "v1.2.0"
+    assert image_tag("localhost:5000/app:abc123@sha256:ff") == "abc123"
+    assert image_tag("localhost:5000/app") is None
+    assert image_tag("ghcr.io/org/app@sha256:ff") is None
+    assert image_tag("sha256:" + "a" * 64) is None
+
+
+def test_image_repo():
+    assert image_repo("ghcr.io/org/app:v1") == "ghcr.io/org/app"
+    assert image_repo("localhost:5000/app:v1@sha256:ff") == "localhost:5000/app"
+    assert image_repo("app:v1") == "app"
+    assert image_repo("app") == "app"
+
+
+def test_image_ids_maps_short_ids(mock_process):
+    mock_process.responses.append(
+        process.Result(0, "aaa111ffff sha256:one\nbbb222ffff sha256:two\n", "")
+    )
+    assert image_ids(["aaa111", "bbb222"]) == {"aaa111": "sha256:one", "bbb222": "sha256:two"}
+    assert mock_process.calls[0][1] == [
+        "docker",
+        "inspect",
+        "--format",
+        "{{.Id}} {{.Image}}",
+        "aaa111",
+        "bbb222",
+    ]
+
+
+def test_image_ids_empty_makes_no_call(mock_process):
+    assert image_ids([]) == {}
+    assert mock_process.calls == []
+
+
+def test_image_ids_inspect_failure(mock_process):
+    mock_process.responses.append(process.Result(1, "", "No such container"))
+    assert image_ids(["aaa111"]) is None
+
+
+def test_image_ids_missing_container(mock_process):
+    mock_process.responses.append(process.Result(0, "aaa111ffff sha256:one\n", ""))
+    assert image_ids(["aaa111", "ccc333"]) is None
+
+
+def test_tag_image(mock_process):
+    mock_process.responses.append(process.Result(0, "", ""))
+    mock_process.responses.append(process.Result(1, "", "no such image"))
+    assert tag_image("sha256:one", "app:flow-deploy-one") is True
+    assert mock_process.calls[0][1] == ["docker", "tag", "sha256:one", "app:flow-deploy-one"]
+    assert tag_image("sha256:two", "app:flow-deploy-two") is False
+
+
+def test_other_projects_here(mock_process, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PWD", str(tmp_path))
+    mock_process.responses.append(process.Result(0, "proj\nproj\nold\n\n", ""))
+    assert other_projects_here("proj") == {"old"}
+    args = mock_process.calls[0][1]
+    assert f"label=com.docker.compose.project.working_dir={tmp_path}" in args
+
+
+def test_other_projects_here_checks_the_shell_path_too(mock_process, monkeypatch, tmp_path):
+    """compose records the directory as given, which may be a symlinked path."""
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    monkeypatch.chdir(real)
+    monkeypatch.setenv("PWD", str(tmp_path / "link"))
+    mock_process.responses.append(process.Result(0, "", ""))
+    mock_process.responses.append(process.Result(0, "other\n", ""))
+    assert other_projects_here("proj") == {"other"}
+    assert len(mock_process.calls) == 2
+
+
+def test_other_projects_here_ignores_an_inherited_pwd(mock_process, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PWD", "/somewhere/else")
+    mock_process.responses.append(process.Result(0, "", ""))
+    assert other_projects_here("proj") == set()
+    assert len(mock_process.calls) == 1
+
+
+def test_other_projects_here_failure(mock_process, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PWD", raising=False)
+    mock_process.responses.append(process.Result(1, "", "daemon down"))
+    assert other_projects_here("proj") is None

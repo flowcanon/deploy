@@ -68,6 +68,12 @@ def failure(msg: str) -> None:
     info(f"  ✗ {msg}")
 
 
+def warning(msg: str) -> None:
+    if _is_github_actions():
+        _write(f"::warning::{msg}")
+    _write(f"[{_timestamp()}] WARNING: {msg}", stream=sys.stderr)
+
+
 def error(msg: str) -> None:
     if _is_github_actions():
         _write(f"::error::{msg}")

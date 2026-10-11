@@ -32,10 +32,17 @@ def compose_run(
     return process.run(command + args, env=env)
 
 
-def compose_config(cmd: list[str] | None = None) -> dict:
-    """Run <compose-cmd> config and parse YAML output."""
+def compose_config(cmd: list[str] | None = None, env: dict[str, str] | None = None) -> dict:
+    """Run <compose-cmd> config and parse YAML output.
+
+    ``env`` (e.g. DEPLOY_TAG) applies while compose interpolates, so the
+    rendered images show what a deploy with it would run.
+    """
     command = cmd or resolve_command()
-    result = process.run(command + ["config"])
+    if env:
+        result = process.run(command + ["config"], env=env)
+    else:
+        result = process.run(command + ["config"])
     if result.returncode != 0:
         raise RuntimeError(f"compose config failed: {result.stderr}")
     return yaml.safe_load(result.stdout)

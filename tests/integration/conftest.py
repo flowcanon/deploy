@@ -72,6 +72,9 @@ def registry(docker):
             build_args = [a for k, v in args.items() for a in ("--build-arg", f"{k}={v}")]
             run(["docker", "build", "-q", "-t", image, *build_args, str(IMAGES / "stub")])
             run(["docker", "push", "-q", image])
+        # :latest starts out as v1, as a host first brought up by hand would be.
+        run(["docker", "tag", f"{host}/stub:v1", f"{host}/stub:latest"])
+        run(["docker", "push", "-q", f"{host}/stub:latest"])
         yield host
     finally:
         run(["docker", "rm", "-f", name], check=False)
@@ -99,7 +102,7 @@ def service(
     if start_period:
         healthcheck["start_period"] = start_period
     return {
-        "image": image or "${REGISTRY}/stub:${DEPLOY_TAG}",
+        "image": image or "${REGISTRY}/stub:${DEPLOY_TAG:-latest}",
         "environment": dict(env or {}),
         "labels": labels,
         "healthcheck": healthcheck,
@@ -158,23 +161,49 @@ class Stack:
     def git(self, *args):
         return run(["git", "-C", str(self.repo), *args]).stdout.strip()
 
-    def commit(self, tag, compose):
-        """Commit ``compose`` as docker-compose.yml and tag it ``tag``."""
+    def commit(self, tag, compose, annotated=False, force=False):
+        """Commit ``compose`` as docker-compose.yml, tag it ``tag`` (unless None), push.
+
+        ``force`` moves an existing tag, here and on origin, as a re-release does.
+        """
         (self.repo / "docker-compose.yml").write_text(yaml.safe_dump(compose, sort_keys=False))
         self.git("add", "docker-compose.yml")
-        self.git("commit", "-q", "--allow-empty", "-m", tag)
-        self.git("tag", tag)
-        self.git("push", "-q", "origin", "HEAD:refs/heads/main", "--tags")
+        self.git("commit", "-q", "--allow-empty", "-m", tag or "untagged")
+        if tag:
+            args = ["-a", "-m", f"release {tag}"] if annotated else []
+            self.git("tag", *(["-f"] if force else []), *args, tag)
+        self.git("push", "-q", "origin", "HEAD:refs/heads/main")
+        if tag:
+            self.git("push", "-q", *(["-f"] if force else []), "origin", f"refs/tags/{tag}")
         return self.git("rev-parse", "HEAD")
+
+    def push_image(self, source, tag):
+        """Publish the stub image built as ``source`` under ``tag`` too."""
+        image = f"{self.registry}/stub:{tag}"
+        run(["docker", "tag", f"{self.registry}/stub:{source}", image])
+        run(["docker", "push", "-q", image])
+
+    def flow(self, *args, extra=None):
+        """Run a flow-deploy command in the repo; returns the CompletedProcess."""
+        return run(
+            [sys.executable, "-m", "flow_deploy.cli", *args],
+            cwd=self.repo,
+            env=self.env(extra=extra),
+            check=False,
+        )
 
     def compose(self, *args, tag=None, check=True, extra=None):
         return run(
             ["docker", "compose", *args], cwd=self.repo, env=self.env(tag, extra), check=check
         )
 
-    def up(self, tag, scale=None, wait=True, extra=None):
-        """Bring the stack up at ``tag``, as a running production host would be."""
-        self.git("checkout", "-q", "--detach", tag)
+    def up(self, tag, scale=None, wait=True, extra=None, ref=None):
+        """Bring the stack up at ``tag``, as a running production host would be.
+
+        ``tag=None`` runs compose without DEPLOY_TAG (so images resolve to
+        :latest), checked out at ``ref``.
+        """
+        self.git("checkout", "-q", "--detach", ref or tag)
         scale_args = [a for name, n in (scale or {}).items() for a in ("--scale", f"{name}={n}")]
         wait_args = ["--wait"] if wait else []
         self._up = True
@@ -223,26 +252,34 @@ class Stack:
         )
 
     def state(self):
-        """service -> sorted list of (version tag, state) for its containers."""
-        out = run(
+        """service -> sorted list of (version, state) for its containers.
+
+        The version is the STUB_VERSION baked into the image, not its tag: a
+        reverted container runs a flow-deploy-<id> alias of the image it ran.
+        """
+        ids = run(
             [
                 "docker",
                 "ps",
-                "-a",
+                "-aq",
                 "--filter",
                 f"label=com.docker.compose.project={self.project}",
-                "--format",
-                "{{json .}}",
             ]
-        ).stdout
+        ).stdout.split()
         result = {}
-        for line in out.splitlines():
-            ctr = json.loads(line)
-            labels = dict(kv.split("=", 1) for kv in ctr["Labels"].split(",") if "=" in kv)
-            svc = labels.get("com.docker.compose.service")
-            tag = ctr["Image"].rsplit(":", 1)[-1] if "/" in ctr["Image"] else ctr["Image"]
-            result.setdefault(svc, []).append((tag, ctr["State"]))
+        for ctr in self.inspect(ids):
+            svc = ctr["Config"]["Labels"].get("com.docker.compose.service")
+            env = dict(e.split("=", 1) for e in ctr["Config"]["Env"] if "=" in e)
+            result.setdefault(svc, []).append((env.get("STUB_VERSION"), ctr["State"]["Status"]))
         return {svc: sorted(v) for svc, v in result.items()}
+
+    def inspect(self, ids):
+        return json.loads(run(["docker", "inspect", *ids]).stdout) if ids else []
+
+    def image_refs(self, service_name):
+        """The image references (repo:tag) of a service's running containers."""
+        ids = self.compose("ps", "-q", service_name).stdout.split()
+        return sorted(ctr["Config"]["Image"] for ctr in self.inspect(ids))
 
     def running(self):
         """service -> sorted list of the version tags of its running containers."""
@@ -260,6 +297,11 @@ class Stack:
 
     def sha(self, tag):
         return self.git("rev-parse", f"{tag}^{{commit}}")
+
+    def record(self):
+        """The .git/deploy-tag record flow-deploy keeps, or None."""
+        path = self.repo / ".git" / "deploy-tag"
+        return json.loads(path.read_text()) if path.exists() else None
 
     def lock_exists(self):
         return (self.repo / ".git" / "deploy-lock").exists()

@@ -33,6 +33,8 @@ def test_fetch_success(mock_process):
     mock_process.responses.append(_ok())
     result = fetch()
     assert result.returncode == 0
+    # Version tags are fetched, and a re-pushed tag moves locally.
+    assert mock_process.calls[0][1] == ["git", "fetch", "--tags", "--force", "origin"]
 
 
 def test_current_sha(mock_process):

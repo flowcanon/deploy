@@ -2,10 +2,11 @@
 
 import signal
 import time
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from flow_deploy import compose, config, containers, git, lock, log
+from flow_deploy import compose, config, containers, deployed, git, lock, log
 
 EXIT_OK = 0
 EXIT_FAILED = 1  # failed; everything it touched was put back
@@ -62,13 +63,14 @@ def _signals_deferred(why: str):
 
 
 @dataclass
-class Drained:
-    """What a drain-first service was running before its drain."""
+class Previous:
+    """What an app service was running when the deploy started."""
 
     svc: config.ServiceConfig
     replicas: int = 0
-    old_tag: str | None = None
-    old_image: str = ""
+    image_id: str = ""  # the image its containers ran (the most common, if mixed)
+    image_ref: str = ""  # how docker named it: repo:tag, repo@digest, ...
+    restore_tag: str | None = None  # a DEPLOY_TAG that brings image_id back
 
 
 @dataclass
@@ -76,32 +78,53 @@ class _Run:
     """What a deploy has changed so far, so any failure can put it back."""
 
     compose_cmd: list[str]
+    project: str = ""
     previous_sha: str | None = None
-    drained: list[Drained] = field(default_factory=list)
-    started: set[str] = field(default_factory=set)  # drain-first, healthy on the new tag
+    previous: dict[str, Previous] = field(default_factory=dict)
+    drained: list[str] = field(default_factory=list)  # drain-first services touched
+    shipped: list[str] = field(default_factory=list)  # rolling services deployed
+    aborted: str | None = None  # the rolling service whose own abort kept its old container
+    whole_project: bool = True  # every app service is in this deploy
 
-    def revert(self, reason: str, down: list[Drained] | None = None) -> int:
-        """Put things back as they were before the deploy.
+    def revert(self, reason: str) -> int:
+        """Put everything back as it was before the deploy.
 
-        Restores the repo and brings ``down`` (by default every drained
-        service not yet healthy on the new tag) back on the tags they ran.
-        Expand-then-contract migrations keep old code compatible with the new
-        schema, as rolling deploys already assume. Exits 3 only when
-        something can't be put back.
+        Restores the repo, rolls shipped rolling services back to the image
+        each was running (newest change first), then brings every drained
+        service back on its previous image in deploy order. What was running
+        comes from the containers themselves (see _snapshot), not git or
+        ``:latest``. Expand-then-contract migrations keep old code compatible
+        with the new schema, as rolling deploys already assume. Exits 3 only
+        when something can't be put back.
         """
         # Don't let a further signal cut the revert short (or start a second one).
         for signum in HANDLED_SIGNALS:
             signal.signal(signum, signal.SIG_IGN)
-        if down is None:
-            down = [r for r in self.drained if r.svc.name not in self.started]
         log.info("")
         problems = []
         if self.previous_sha is not None and not git.restore(self.previous_sha):
             problems.append("git restore failed")
-        if not _restore_drained(down, self.compose_cmd):
+        if self.aborted and not _remove_stopped(self.previous[self.aborted].svc, self.project):
+            # A new container its abort stopped but couldn't remove: the next
+            # deploy's `compose up --scale` would restart it.
+            problems.append(f"{self.aborted}'s stopped new container could not be removed")
+        for name in reversed(self.shipped):
+            if not _roll_back(self.previous[name], self.compose_cmd, self.project):
+                problems.append(f"{name} could not be rolled back")
+        restore = [self.previous[name] for name in self.drained]
+        if not _restore_drained(restore, self.compose_cmd, self.project):
             problems.append("drained services could not be restored")
+        self._record_previous_tag()
         log.footer(f"FAILED ({reason})")
         return _degraded(", ".join(problems)) if problems else EXIT_FAILED
+
+    def _record_previous_tag(self) -> None:
+        """After a revert, record the previous tag if every service shared one."""
+        tags = {p.restore_tag for p in self.previous.values() if p.replicas}
+        if self.whole_project and len(tags) == 1 and None not in tags:
+            deployed.write(tags.pop(), self.previous_sha or "")
+        elif self.previous:
+            deployed.clear()
 
 
 def deploy(
@@ -122,7 +145,7 @@ def deploy(
     if dry_run:
         # Dry run: just parse config from current checkout, no git or lock
         try:
-            compose_dict = compose.compose_config(cmd=compose_cmd)
+            compose_dict = compose.compose_config(cmd=compose_cmd, env={"DEPLOY_TAG": tag})
         except RuntimeError as e:
             log.error(str(e))
             return EXIT_FAILED
@@ -185,9 +208,10 @@ def _deploy_locked(
     if git_code != 0:
         return EXIT_FAILED
 
-    # Parse compose config (now reading from the target commit)
+    # Parse compose config (now reading from the target commit), rendered with
+    # this deploy's tag so each image shows what will run.
     try:
-        compose_dict = compose.compose_config(cmd=run.compose_cmd)
+        compose_dict = compose.compose_config(cmd=run.compose_cmd, env={"DEPLOY_TAG": tag})
     except RuntimeError as e:
         log.error(str(e))
         return EXIT_FAILED if git.restore(run.previous_sha) else _degraded("git restore failed")
@@ -195,16 +219,39 @@ def _deploy_locked(
     app_services = _resolve_app_services(compose_dict, services_filter)
     if app_services is None:
         return EXIT_FAILED if git.restore(run.previous_sha) else _degraded("git restore failed")
+    all_apps = [s for s in config.parse_services(compose_dict) if s.is_app]
+    run.whole_project = len(app_services) == len(all_apps)
 
     service_names = ", ".join(s.name for s in app_services)
     log.header("deploy")
     log.info(f"tag: {tag}")
     log.info(f"services: {service_names}")
     log.info("")
+    _warn_untagged_images(app_services, tag)
 
-    project = compose_dict.get("name", "")
+    run.project = compose_dict.get("name", "")
+    project = run.project
     compose_cmd = run.compose_cmd
     start_time = time.time()
+
+    # A release that renames the compose project would start a second stack
+    # beside the running one, and snapshot (so revert) nothing.
+    others = containers.other_projects_here(project)
+    if others is None:
+        log.error("could not list this directory's containers; nothing was changed")
+    elif others:
+        log.error(
+            f"containers from compose project(s) {', '.join(sorted(others))} are running "
+            f"in this directory, but this commit's project is {project or '(unnamed)'}; "
+            "a project rename can't be deployed in place. Nothing was changed."
+        )
+    if others is None or others:
+        return EXIT_FAILED if git.restore(run.previous_sha) else _degraded("git restore failed")
+
+    # Before changing anything, record what each service is running, so any
+    # failure can put back exactly that image.
+    if not _snapshot(run, app_services):
+        return EXIT_FAILED if git.restore(run.previous_sha) else _degraded("git restore failed")
 
     # app_services is in deploy.order. Services start in that order and stop
     # in reverse, so a worker comes up after the web and API it depends on,
@@ -213,15 +260,14 @@ def _deploy_locked(
     rolling = [s for s in app_services if not s.drains_first]
     dirty = []  # services whose own failure cleanup also failed
 
-    def failed(reason: str, down: list[Drained] | None = None) -> int:
-        code = run.revert(reason, down)
+    def failed(reason: str) -> int:
+        code = run.revert(reason)
         if dirty and code == EXIT_FAILED:
             return _degraded(f"cleanup failed for {', '.join(dirty)}")
         return code
 
     # Phase 1: drain-first services stop, in reverse deploy order, before
-    # anything rolls, so none of their old code runs beside new code. What
-    # each one was running is kept to bring it back on failure.
+    # anything rolls, so none of their old code runs beside new code.
     for svc in reversed(drain_first):
         if _drain_service(svc, tag, compose_cmd, run.drained, project=project) != 0:
             return failed("deploy aborted")
@@ -231,28 +277,39 @@ def _deploy_locked(
         result = _deploy_service(svc, tag, compose_cmd, project=project)
         if result == SVC_DIRTY:
             dirty.append(svc.name)
+        if result != SVC_OK and run.previous[svc.name].replicas:
+            run.aborted = svc.name
+            return failed("deploy aborted")  # its abort left the old container serving
+        run.shipped.append(svc.name)
         if result != SVC_OK:
+            # Nothing ran before, so whatever the failed rollout left goes too.
             return failed("deploy aborted")
 
     # Phase 3: drain-first services start in deploy order, at the replica
     # count they ran. One that wasn't running (just added in this release,
     # or crashed) starts at 1: a deploy brings its services up. Every one is
-    # attempted, so one failure doesn't strand the rest; a failed one goes
-    # back to what it ran before.
-    by_name = {record.svc.name: record for record in run.drained}
+    # attempted, so one failure doesn't strand the rest; any failure reverts
+    # the whole deploy.
     failures = []
     for svc in drain_first:
-        record = by_name[svc.name]
-        result = _start_service(svc, tag, compose_cmd, max(record.replicas, 1), project=project)
-        if result == SVC_OK:
-            run.started.add(svc.name)
-            continue
+        replicas = max(run.previous[svc.name].replicas, 1)
+        result = _start_service(svc, tag, compose_cmd, replicas, project=project)
         if result == SVC_DIRTY:
             dirty.append(svc.name)
-        failures.append(record)
+        if result != SVC_OK:
+            failures.append(svc.name)
     if failures:
-        names = ", ".join(r.svc.name for r in failures)
-        return failed(f"{names} failed to start", failures)
+        return failed(f"{', '.join(failures)} failed to start")
+
+    if run.whole_project:
+        deployed.write(tag)
+    else:
+        # Services now run different tags; no one tag describes the host.
+        deployed.clear()
+        log.warning(
+            "--service deployed only some app services; manual compose commands "
+            "on this host need DEPLOY_TAG set explicitly until a full deploy"
+        )
 
     elapsed = time.time() - start_time
 
@@ -260,6 +317,83 @@ def _deploy_locked(
     log.info(f"HEAD detached at {tag}")
     log.footer(f"complete ({elapsed:.1f}s)")
     return EXIT_OK
+
+
+def _warn_untagged_images(services: list[config.ServiceConfig], tag: str) -> None:
+    """Warn about app images that don't follow DEPLOY_TAG.
+
+    Such an image deploys whatever its fixed reference names (often
+    ``:latest``, possibly an unreleased build), and a revert can't target the
+    previous version.
+    """
+    for svc in services:
+        if svc.image and containers.image_tag(svc.image) != tag:
+            log.warning(
+                f"{svc.name}'s image ({svc.image}) doesn't use DEPLOY_TAG, so this "
+                "deploy runs whatever it names and a revert can't target the previous "
+                "version. Name it repo:${DEPLOY_TAG:-latest}."
+            )
+
+
+def _snapshot(run: _Run, services: list[config.ServiceConfig]) -> bool:
+    """Record what each service is running on ``run.previous``. False if Docker can't say.
+
+    Each running image gets a restore tag that names exactly it (see
+    _restore_tag); services sharing an image share one.
+    """
+    aliases: dict[tuple[tuple[str, ...], str], str | None] = {}
+    for svc in services:
+        ctrs = containers.list_containers_for_service(
+            svc.name, project=run.project, statuses=("running", "restarting")
+        )
+        ids = containers.image_ids([c["ID"] for c in ctrs]) if ctrs is not None else None
+        if ids is None:
+            log.error(f"could not inspect {svc.name}'s containers; nothing was changed")
+            return False
+        prev = Previous(svc, replicas=len(ctrs))
+        if ctrs:
+            counts = Counter(ids[c["ID"]] for c in ctrs)
+            prev.image_id = counts.most_common(1)[0][0]
+            prev.image_ref = next(c.get("Image", "") for c in ctrs if ids[c["ID"]] == prev.image_id)
+            if len(counts) > 1:
+                log.warning(
+                    f"{svc.name} is running {len(counts)} different images; a revert "
+                    f"restores the most common, {prev.image_ref}"
+                )
+            # A revert renders the previous commit's compose file, whose image
+            # repo the running container's name records. The new config's repo
+            # covers a container whose tag has moved (docker ps shows an ID).
+            repos = {containers.image_repo(svc.image or "")}
+            if containers.image_tag(prev.image_ref) is not None or "@" in prev.image_ref:
+                repos.add(containers.image_repo(prev.image_ref))
+            key = (tuple(sorted(repos)), prev.image_id)
+            if key not in aliases:
+                aliases[key] = _restore_tag(*key)
+            prev.restore_tag = aliases[key]
+            if prev.restore_tag is None:
+                # Never start a deploy that already can't be reverted exactly.
+                log.error(
+                    f"could not tag {svc.name}'s running image ({prev.image_ref}) "
+                    "for a revert; nothing was changed"
+                )
+                return False
+        run.previous[svc.name] = prev
+    return True
+
+
+def _restore_tag(repos: tuple[str, ...], image_id: str) -> str | None:
+    """A DEPLOY_TAG that names exactly ``image_id``: a local alias of it.
+
+    ``repo:flow-deploy-<image id>`` in each of ``repos``, created now, before
+    anything changes. A revert then restores the image that was running, never
+    whatever ``:latest`` or a re-pushed tag has since come to mean, and it
+    works the same whether the container ran a version tag, a sha, ``:latest``,
+    a digest, or nothing nameable at all.
+    """
+    alias = "flow-deploy-" + image_id.removeprefix("sha256:")
+    if all(repos) and all(containers.tag_image(image_id, f"{r}:{alias}") for r in repos):
+        return alias
+    return None
 
 
 def _degraded(problem: str) -> int:
@@ -321,32 +455,21 @@ def _pull(svc: config.ServiceConfig, env: dict, compose_cmd: list[str]) -> bool:
     return True
 
 
-def _image_tag(image: str) -> str | None:
-    """The tag of ``registry/name:tag[@digest]``, or None when there's no tag.
-
-    A bare image ID (``sha256:...``) has no tag.
-    """
-    if image.startswith("sha256:"):
-        return None
-    name = image.rsplit("/", 1)[-1].split("@", 1)[0]
-    return name.rsplit(":", 1)[1] if ":" in name else None
-
-
 def _drain_service(
     svc: config.ServiceConfig,
     tag: str,
     compose_cmd: list[str],
-    drained: list[Drained],
+    drained: list[str],
     project: str = "",
 ) -> int:
     """Pull the new image, then stop and remove the running containers.
 
-    Pulls first so an unpullable tag fails before anything stops. Records
-    what was running on ``drained`` *before* stopping anything, so a signal
-    mid-drain (a drain can take as long as the service's longest task) still
-    knows what to restore. Returns 1 if the pull failed or any container
-    failed to stop or be removed: the caller must not roll anything while old
-    code may still be running.
+    Pulls first so an unpullable tag fails before anything stops. Adds the
+    service to ``drained`` *before* stopping anything, so a signal mid-drain
+    (a drain can take as long as the service's longest task) still restores
+    it. Returns 1 if the pull failed or any container failed to stop or be
+    removed: the caller must not roll anything while old code may still be
+    running.
     """
     log.service_start(svc.name)
     svc_start = time.time()
@@ -366,17 +489,7 @@ def _drain_service(
         log.failure(f"could not list {svc.name} containers; not draining blind")
         log.service_end()
         return 1
-    images = list(dict.fromkeys(c.get("Image", "") for c in ctrs))
-    record = Drained(svc, replicas=len(ctrs))
-    if images:
-        record.old_image = images[0]
-        record.old_tag = _image_tag(images[0])
-    drained.append(record)
-    if len(images) > 1:
-        log.error(
-            f"{svc.name} was running mixed images ({', '.join(images)}); "
-            f"a rollback restores {images[0]}"
-        )
+    drained.append(svc.name)
     if not ctrs:
         log.step("not running; nothing to drain")
 
@@ -476,43 +589,125 @@ def _remove_all(ctrs: list[dict], timeout: int) -> bool:
     return ok
 
 
-def _restore_drained(drained: list[Drained], compose_cmd: list[str]) -> bool:
-    """Bring drained services back as they were, in deploy (start) order.
+def _remove_stopped(svc: config.ServiceConfig, project: str, keep_image: str | None = None) -> bool:
+    """Remove ``svc``'s stopped leftovers (a stop that worked, then an rm that didn't).
 
-    Returns False if any couldn't be.
+    `compose up --scale` starts stopped containers before creating new ones,
+    so a revert would otherwise bring back whatever image a leftover has.
+    Leftovers on ``keep_image`` are kept: restarting one restores that image.
     """
+    stopped = containers.list_containers_for_service(
+        svc.name, project=project, statuses=("created", "exited", "dead")
+    )
+    ids = containers.image_ids([c["ID"] for c in stopped]) if stopped is not None else None
+    if ids is None:
+        log.failure(f"cannot revert {svc.name}: its stopped containers can't be inspected")
+        return False
     ok = True
-    for record in sorted(drained, key=lambda r: (r.svc.order, r.svc.file_order)):
-        name = record.svc.name
-        if not record.replicas:
-            log.step(f"{name} was not running before the deploy; leaving it stopped")
-            continue
-        if record.old_tag is None:
-            log.failure(
-                f"cannot restore {name}: no tag in its previous image "
-                f"({record.old_image or 'unknown'}); start it manually"
-            )
-            ok = False
-            continue
-        log.step(f"restoring {name} on {record.old_tag} ({record.replicas} replica(s))...")
-        result = compose.compose_run(
-            ["up", "-d", "--no-deps", "--scale", f"{name}={record.replicas}", name],
-            env={"DEPLOY_TAG": record.old_tag},
-            cmd=compose_cmd,
-        )
-        if result.returncode != 0:
-            log.failure(f"could not restore {name}: {result.stderr.strip()}")
+    for ctr in [c for c in stopped if keep_image is None or ids[c["ID"]] != keep_image]:
+        if not containers.remove_container(ctr["ID"]):
+            log.failure(f"could not remove stopped {svc.name} container {ctr['ID'][:7]}")
             ok = False
     return ok
 
 
+def _roll_back(prev: Previous, compose_cmd: list[str], project: str) -> bool:
+    """Put a shipped rolling service back on the image it was running.
+
+    A rolling deploy of the previous image (already local, so no pull): no
+    downtime. A service that had no container before the deploy goes back to
+    having none.
+    """
+    svc = prev.svc
+    if not _remove_stopped(svc, project):
+        return False
+    ctrs = containers.list_containers_for_service(
+        svc.name, project=project, statuses=("running", "restarting")
+    )
+    ids = containers.image_ids([c["ID"] for c in ctrs]) if ctrs is not None else None
+    if ids is None:
+        log.failure(f"cannot roll {svc.name} back: its containers can't be inspected")
+        return False
+    if not prev.replicas:
+        log.step(f"{svc.name} had no container before the deploy; removing the new one")
+        return _remove_all(ctrs, timeout=svc.drain)
+    newer = [c for c in ctrs if ids[c["ID"]] != prev.image_id]
+    if len(newer) < len(ctrs):
+        # The cutover's cleanup failed, so the previous image still runs beside
+        # the new one. A rolling deploy can't tell them apart by tag here.
+        log.step(f"{svc.name} still runs its previous image; removing the new container(s)")
+        return _remove_all(newer, timeout=svc.drain) and _scale_to_previous(prev, compose_cmd)
+    log.step(f"rolling {svc.name} back to {prev.restore_tag}...")
+    return (
+        _deploy_service(svc, prev.restore_tag, compose_cmd, project=project, pull=False) == SVC_OK
+    )
+
+
+def _restore_drained(previous: list[Previous], compose_cmd: list[str], project: str) -> bool:
+    """Bring drained services back to what they ran, in deploy (start) order.
+
+    Drains any new containers first (with each service's drain timeout), then
+    starts the previous image at its previous replica count. Returns False if
+    any couldn't be put back.
+    """
+    ok = True
+    for prev in sorted(previous, key=lambda p: (p.svc.order, p.svc.file_order)):
+        svc = prev.svc
+        if not _remove_stopped(svc, project, keep_image=prev.image_id):
+            ok = False
+            continue
+        ctrs = containers.list_containers_for_service(
+            svc.name, project=project, statuses=("running", "restarting")
+        )
+        ids = containers.image_ids([c["ID"] for c in ctrs]) if ctrs is not None else None
+        if ids is None:
+            log.failure(f"cannot restore {svc.name}: its containers can't be inspected")
+            ok = False
+            continue
+        newer = [c for c in ctrs if ids[c["ID"]] != prev.image_id]
+        if newer:
+            log.step(f"draining {len(newer)} new {svc.name} container(s)...")
+            if not _remove_all(newer, timeout=svc.drain):
+                ok = False
+                continue
+        if not prev.replicas:
+            log.step(f"{svc.name} was not running before the deploy; leaving it stopped")
+            continue
+        log.step(f"restoring {svc.name} on {prev.restore_tag} ({prev.replicas} replica(s))...")
+        ok = _scale_to_previous(prev, compose_cmd) and ok
+    return ok
+
+
+def _scale_to_previous(prev: Previous, compose_cmd: list[str]) -> bool:
+    """Bring ``prev.svc`` to its previous replica count on its previous image.
+
+    --no-recreate: containers already on that image are kept, never replaced.
+    """
+    svc = prev.svc
+    result = compose.compose_run(
+        ["up", "-d", "--no-deps", "--no-recreate", "--scale", f"{svc.name}={prev.replicas}"]
+        + [svc.name],
+        env={"DEPLOY_TAG": prev.restore_tag},
+        cmd=compose_cmd,
+    )
+    if result.returncode != 0:
+        log.failure(f"could not restore {svc.name}: {result.stderr.strip()}")
+    return result.returncode == 0
+
+
 def _deploy_service(
-    svc: config.ServiceConfig, tag: str, compose_cmd: list[str], project: str = ""
+    svc: config.ServiceConfig,
+    tag: str,
+    compose_cmd: list[str],
+    project: str = "",
+    pull: bool = True,
 ) -> int:
     """Deploy a single service with a rolling cutover.
 
-    Returns SVC_OK, SVC_FAILED (old container still serving, nothing left
-    behind), or SVC_DIRTY (failed, and cleaning up after itself failed too).
+    ``pull=False`` for a rollback to an image that's already local (and may
+    be a local alias the registry doesn't have). Returns SVC_OK, SVC_FAILED
+    (old container still serving, nothing left behind), or SVC_DIRTY
+    (failed, and cleaning up after itself failed too).
     """
     log.service_start(svc.name)
     svc_start = time.time()
@@ -524,7 +719,7 @@ def _deploy_service(
         return code
 
     # 1. Pull
-    if not _pull(svc, env, compose_cmd):
+    if pull and not _pull(svc, env, compose_cmd):
         return end(SVC_FAILED)
 
     # 2. Scale to 2
@@ -575,12 +770,15 @@ def _deploy_service(
         log.step(f"draining old container ({old_id[:7]}, {svc.drain}s timeout)...")
         clean = containers.stop_container(old_id, timeout=svc.drain)
         clean = containers.remove_container(old_id) and clean
-        clean = _scale_back(svc.name, env, compose_cmd) and clean
+        # Scale back only once the old container is gone: with two left, it
+        # can only remove one, and compose might pick the new one.
+        clean = clean and _scale_back(svc.name, env, compose_cmd)
         if not clean:
             # The new container is healthy and serving, so the deploy
             # succeeded, as on master. A stop/rm failure here is usually the
             # old container having already exited; failing would revert the
-            # repo underneath a healthy new container.
+            # repo underneath a healthy new container. If it's still running,
+            # a later revert keeps it (_roll_back).
             log.step(f"warning: cleanup of old container {old_id[:7]} did not complete")
 
         elapsed = time.time() - svc_start
@@ -591,7 +789,9 @@ def _deploy_service(
         log.step(f"aborting: stopping new container ({new_id[:7]})...")
         clean = containers.stop_container(new_id)
         clean = containers.remove_container(new_id) and clean
-        clean = _scale_back(svc.name, env, compose_cmd) and clean
+        # As above: with the new container still there, scale back might
+        # remove the old one instead.
+        clean = clean and _scale_back(svc.name, env, compose_cmd)
         if clean:
             log.step("aborted, old container still serving")
         else:

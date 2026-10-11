@@ -10,8 +10,12 @@ def is_dirty() -> bool:
 
 
 def fetch() -> process.Result:
-    """Fetch from origin."""
-    return process.run(["git", "fetch", "origin"])
+    """Fetch from origin, including every tag.
+
+    --tags fetches release tags even when they aren't on a fetched branch;
+    --force updates a tag that was moved and re-pushed instead of refusing.
+    """
+    return process.run(["git", "fetch", "--tags", "--force", "origin"])
 
 
 def current_sha() -> str:
