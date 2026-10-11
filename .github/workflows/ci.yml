@@ -39,3 +39,23 @@ jobs:
 
       - name: Test
         run: poetry run pytest --cov=flow_deploy --cov-report=term-missing
+
+  # Real containers: a local registry, stub services, and an sshd, driven by
+  # flow-deploy as a subprocess. Kept out of the unit job's coverage gate.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install poetry
+          poetry install --with test
+
+      - name: Integration tests
+        run: poetry run pytest -m integration --no-cov -p no:randomly

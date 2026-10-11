@@ -42,6 +42,14 @@ def test_run_streaming_nonzero():
     assert code != 0
 
 
+def test_run_in_a_new_session_leads_its_own_session():
+    import sys
+
+    probe = "import os; print(os.getsid(0) == os.getpid())"
+    assert run([sys.executable, "-c", probe], new_session=True).stdout.strip() == "True"
+    assert run([sys.executable, "-c", probe]).stdout.strip() == "False"
+
+
 def test_run_streaming_with_env():
     code = run_streaming(["sh", "-c", 'test "$TEST_VAR" = works'], env={"TEST_VAR": "works"})
     assert code == 0

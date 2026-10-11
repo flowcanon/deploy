@@ -79,7 +79,7 @@ def test_signal_while_a_drain_is_stopping_still_restores(mock_process, monkeypat
     """A drain can take an hour: a cancel mid-stop must still know what to restore."""
     _chdir(monkeypatch, tmp_path)
 
-    def stop_interrupted(container_id, timeout=30):
+    def stop_interrupted(container_id, timeout=30, isolate=False):
         signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
 
     monkeypatch.setattr(deploy_mod.containers, "stop_container", stop_interrupted)

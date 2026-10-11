@@ -111,6 +111,12 @@ def test_stop_container(mock_process):
     assert args == ["docker", "stop", "--time", "60", "abc123"]
 
 
+def test_stop_container_isolated_runs_in_its_own_session(mock_process):
+    assert stop_container("abc123", timeout=5, isolate=True) is True
+    assert stop_container("def456") is True
+    assert mock_process.new_sessions == [["docker", "stop", "--time", "5", "abc123"]]
+
+
 def test_stop_container_failure(mock_process):
     mock_process.responses.append(process.Result(1, "", ""))
     assert stop_container("abc123") is False

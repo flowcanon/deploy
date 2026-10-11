@@ -117,7 +117,7 @@ def record(deploy_module, process_module, name, workdir):
     queue = [process_module.Result(*r) for r in responses]
     calls = []
 
-    def fake_run(args, env=None, cwd=None):
+    def fake_run(args, env=None, cwd=None, **_kwargs):
         calls.append([args, env])
         return queue.pop(0) if queue else process_module.Result(0, "", "")
 

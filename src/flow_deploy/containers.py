@@ -84,9 +84,14 @@ def get_container_health(container_id: str) -> str | None:
     return status if status else None
 
 
-def stop_container(container_id: str, timeout: int = 30) -> bool:
-    """Stop a container with given timeout. Returns True on success."""
-    result = process.run(["docker", "stop", "--time", str(timeout), container_id])
+def stop_container(container_id: str, timeout: int = 30, isolate: bool = False) -> bool:
+    """Stop a container with given timeout. Returns True on success.
+
+    ``isolate`` runs docker stop in its own session so a terminal signal
+    can't cut it short (the daemon would carry on stopping regardless).
+    """
+    args = ["docker", "stop", "--time", str(timeout), container_id]
+    result = process.run(args, new_session=True) if isolate else process.run(args)
     return result.returncode == 0
 
 

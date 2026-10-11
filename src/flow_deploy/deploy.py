@@ -2,6 +2,7 @@
 
 import signal
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from flow_deploy import compose, config, containers, git, lock, log
@@ -11,8 +12,10 @@ EXIT_FAILED = 1  # failed; everything it touched was put back
 EXIT_LOCKED = 2
 EXIT_DEGRADED = 3  # failed, and something couldn't be put back
 
-# Signals that revert the deploy. SIGHUP is what a remote deploy gets when its
-# ssh session dies, e.g. when the CI job driving it is cancelled.
+# Signals that revert the deploy: a timeout or shutdown (SIGTERM), Ctrl-C, and
+# a hung-up terminal (SIGHUP). A cancelled CI job running `ssh host
+# flow-deploy ...` without a pty sends none of them: the remote deploy runs on
+# (tests/integration/test_ci_cancel.py).
 HANDLED_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 
 # Per-service outcomes from _deploy_service and _start_service.
@@ -30,6 +33,32 @@ class Interrupted(BaseException):
     def __init__(self, signum: int):
         super().__init__(signum)
         self.signum = signum
+
+
+@contextmanager
+def _signals_deferred(why: str):
+    """Hold handled signals until the block finishes, then act on the first one.
+
+    The deploy's own handlers are swapped for one that only records; on exit
+    they're put back and, if a signal arrived, Interrupted is raised then.
+    """
+    pending = []
+
+    def hold(signum, frame):
+        if not pending:
+            log.step(f"received signal {signum}; {why}, then reverting")
+        pending.append(signum)
+
+    previous = {signum: signal.getsignal(signum) for signum in HANDLED_SIGNALS}
+    for signum in HANDLED_SIGNALS:
+        signal.signal(signum, hold)
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+    if pending:
+        raise Interrupted(pending[0])
 
 
 @dataclass
@@ -103,8 +132,8 @@ def deploy(
         _dry_run(tag, app_services)
         return EXIT_OK
 
-    # A signal (a cancelled CI job, Ctrl-C, a dropped ssh session) reverts
-    # like any other failure. Handlers go in before the lock is taken, so no
+    # A signal (Ctrl-C, a timeout, a hung-up terminal) reverts like any other
+    # failure. Handlers go in before the lock is taken, so no
     # signal can land between the two and skip cleanup.
     originals = {signum: signal.getsignal(signum) for signum in HANDLED_SIGNALS}
 
@@ -354,11 +383,21 @@ def _drain_service(
     for ctr in ctrs:
         ctr_id = ctr["ID"]
         log.step(f"draining {ctr_id[:7]} ({svc.drain}s timeout)...")
-        if not containers.stop_container(ctr_id, timeout=svc.drain):
+        # Finish this container's stop before acting on a signal. Interrupting
+        # the docker CLI doesn't interrupt the daemon's stop, so a revert
+        # would find the container still "running", leave it be, and then
+        # watch it exit. Once it's stopped and removed, the revert recreates
+        # it cleanly.
+        # The docker stop runs in its own session, so a terminal Ctrl-C (sent
+        # to the whole foreground group) can't cut it short either.
+        with _signals_deferred(f"finishing the drain of {ctr_id[:7]} first"):
+            stopped = containers.stop_container(ctr_id, timeout=svc.drain, isolate=True)
+            removed = stopped and containers.remove_container(ctr_id)
+        if not stopped:
             log.failure(f"could not stop {ctr_id[:7]}; it may still be running")
             log.service_end()
             return 1
-        if not containers.remove_container(ctr_id):
+        if not removed:
             log.failure(f"could not remove {ctr_id[:7]}")
             log.service_end()
             return 1
@@ -575,9 +614,15 @@ def _wait_for_healthy(container_id: str, timeout: int, poll_interval: int) -> bo
 
 
 def _scale_back(service_name: str, env: dict, compose_cmd: list[str]) -> bool:
-    """Scale service back to 1. Returns False if compose failed."""
+    """Scale service back to 1. Returns False if compose failed.
+
+    --no-recreate: scale back only ever removes extras. Without it, compose
+    "fixes" the surviving container to match ``env``'s DEPLOY_TAG, so after a
+    failed health check the old, healthy container was recreated on the new,
+    failing image (master did this; found by the integration suite).
+    """
     result = compose.compose_run(
-        ["up", "-d", "--no-deps", "--scale", f"{service_name}=1", service_name],
+        ["up", "-d", "--no-deps", "--no-recreate", "--scale", f"{service_name}=1", service_name],
         env=env,
         cmd=compose_cmd,
     )
