@@ -41,7 +41,9 @@ line_length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --tb=short --cov=flow_deploy --cov-report=term-missing"
+# Integration tests (real Docker) run separately: pytest -m integration --no-cov
+addopts = "-v --tb=short --cov=flow_deploy --cov-report=term-missing -m 'not integration'"
+markers = ["integration: needs a real Docker daemon (tests/integration)"]
 
 [tool.coverage.run]
 source = ["flow_deploy"]

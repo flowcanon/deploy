@@ -78,6 +78,8 @@ def test_drain_first_runs_drain_then_rolling_then_start(mock_process, monkeypatc
     cmds = _commands(mock_process)
     drain = _index(cmds, "docker stop", "--time 3660", "old_wrk_333")
     roll = _index(cmds, "--scale web=2")
+    # Only the drain's stop is out of the process group; rolling's isn't.
+    assert mock_process.new_sessions == [["docker", "stop", "--time", "3660", "old_wrk_333"]]
     start = _index(cmds, "--scale worker=1 worker")
     assert drain < roll < start
     # The worker never scales to 2: no overlap of old and new.

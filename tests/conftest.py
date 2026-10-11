@@ -10,9 +10,12 @@ def mock_process(monkeypatch):
 
     calls = []
     responses = []
+    new_sessions = []  # commands run in their own session (process.run new_session=True)
 
-    def fake_run(args, env=None, cwd=None):
+    def fake_run(args, env=None, cwd=None, new_session=False):
         calls.append(("run", args, env, cwd))
+        if new_session:
+            new_sessions.append(args)
         if responses:
             return responses.pop(0)
         return process.Result(returncode=0, stdout="", stderr="")
@@ -24,4 +27,8 @@ def mock_process(monkeypatch):
     monkeypatch.setattr(process, "run", fake_run)
     monkeypatch.setattr(process, "run_streaming", fake_run_streaming)
 
-    return type("MockProcess", (), {"calls": calls, "responses": responses})()
+    return type(
+        "MockProcess",
+        (),
+        {"calls": calls, "responses": responses, "new_sessions": new_sessions},
+    )()

@@ -359,8 +359,7 @@ This detects the system's libc (musl or glibc), downloads the latest binary from
 Only one deploy may run at a time per project directory. The tool uses a lock file (`.git/deploy-lock`) containing the PID and timestamp of the running deploy. The lock is stored inside `.git/` to avoid dirtying the working tree. The lock is:
 
 - Acquired before any mutations (git checkout, container changes)
-- Released on completion (success or failure)
-- **Retained** if git restore fails after a failed deploy — prevents further deploys until manual intervention (the error message includes the fix: `git checkout --detach <sha> && rm .git/deploy-lock`)
+- Released on completion: success, failure, a handled signal (SIGTERM, SIGINT, SIGHUP), or an unexpected error. That includes a deploy that couldn't be fully reverted, which exits `3` to say someone needs to look. A retained lock would not have stopped the next deploy anyway: see the next point.
 - Automatically broken if the holding PID is no longer running (stale lock recovery)
 - Reported with a clear message if held by another process (exit code 2)
 
@@ -441,6 +440,8 @@ For multi-host deploys or when you want host discovery from compose labels, use 
 4. Groups services by host
 5. SSHes to each host: `flow-deploy deploy --tag <tag>`
 6. Streams logs back to GitHub Actions
+
+**Cancelling the workflow does not cancel the remote deploy.** The action runs ssh without a pty, so sshd sends the remote `flow-deploy` no signal when the connection drops; `tests/integration/test_ci_cancel.py` verifies this against a real sshd. The deploy runs to completion, or reverts on its own failure, and its output to the closed session is discarded. Running ssh with `-tt` would deliver SIGHUP and make a cancel revert, but every dropped connection would then revert a deploy too.
 
 ```yaml
 name: Deploy

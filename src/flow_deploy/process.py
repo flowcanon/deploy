@@ -11,8 +11,18 @@ class Result:
     stderr: str
 
 
-def run(args: list[str], env: dict[str, str] | None = None, cwd: str | None = None) -> Result:
-    """Run a command and capture output. Raises on non-zero exit."""
+def run(
+    args: list[str],
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+    new_session: bool = False,
+) -> Result:
+    """Run a command and capture output. Raises on non-zero exit.
+
+    ``new_session`` starts the command in its own session, out of this
+    process's group, so a terminal's Ctrl-C (sent to the whole foreground
+    group) reaches only flow-deploy and not the command.
+    """
     merged_env = None
     if env is not None:
         import os
@@ -25,6 +35,7 @@ def run(args: list[str], env: dict[str, str] | None = None, cwd: str | None = No
         text=True,
         env=merged_env,
         cwd=cwd,
+        start_new_session=new_session,
     )
     return Result(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
 

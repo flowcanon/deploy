@@ -29,6 +29,22 @@ DELIBERATE_CHANGES = {
 }
 
 
+def deliberate_command_changes(calls):
+    """master's commands, with the agreed command-level fix applied.
+
+    Scale-back gains --no-recreate. On master, scale-back after a failed
+    health check ran `compose up --scale svc=1` with the new tag, which
+    recreated the surviving old container on the new, failing image. Found
+    by tests/integration (test_rolling_service_fails_its_healthcheck).
+    """
+    fixed = []
+    for args, env in calls:
+        if args[-6:-2] == ["up", "-d", "--no-deps", "--scale"] and args[-2].endswith("=1"):
+            args = args[:-3] + ["--no-recreate"] + args[-3:]  # after --no-deps
+        fixed.append([args, env])
+    return fixed
+
+
 def test_scenarios_and_fixture_agree():
     assert set(SCENARIOS) == set(MASTER)
 
@@ -43,7 +59,8 @@ def test_rolling_deploy_matches_master(name, monkeypatch, tmp_path, capsys):
 
     observed = record(deploy_mod, process, name, str(tmp_path))
 
-    assert observed["calls"] == MASTER[name]["calls"], f"{name}: commands differ from master"
+    expected_calls = deliberate_command_changes(MASTER[name]["calls"])
+    assert observed["calls"] == expected_calls, f"{name}: commands differ from master"
     expected = {"code": MASTER[name]["code"], "lock_left": MASTER[name]["lock_left"]}
     expected.update(DELIBERATE_CHANGES.get(name, {}))
     assert observed["code"] == expected["code"]

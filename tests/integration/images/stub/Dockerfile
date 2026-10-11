@@ -1,0 +1,6 @@
+FROM alpine:3.20
+ARG STUB_VERSION=dev
+ARG STUB_HEALTH=pass
+ENV STUB_VERSION=${STUB_VERSION} STUB_HEALTH=${STUB_HEALTH}
+COPY stub.sh /stub.sh
+ENTRYPOINT ["/bin/sh", "/stub.sh"]

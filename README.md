@@ -137,10 +137,26 @@ with the previous tag in `DEPLOY_TAG`. A service whose image ignores it comes
 back on whatever the compose file names.
 
 A signal reverts the same way, and so does an unexpected error. The signals are
-SIGTERM, Ctrl-C (SIGINT), and SIGHUP. SIGHUP is what a remote deploy receives
-when the CI job driving it over ssh is cancelled. Further signals are ignored
-until the revert finishes, and logging keeps going even if the session's output
-has gone away. Drain-first services already healthy on the new tag stay.
+SIGTERM (a timeout or shutdown), Ctrl-C (SIGINT), and SIGHUP (a hung-up
+terminal). Further signals are ignored until the revert finishes.
+
+A signal that arrives while a drain-first container is stopping is held until
+that container has stopped and been removed, and the deploy then reverts. The
+docker CLI being interrupted doesn't interrupt the daemon's stop, so reverting
+immediately would find the container still "running" and leave it be, only to
+see it exit afterwards. Holding the signal costs at most the rest of that
+container's drain.
+
+Drain-first services already healthy on the new tag stay.
+
+**A cancelled CI job does not revert a remote deploy.** `deploy-action` runs
+`ssh host "cd dir && flow-deploy deploy --tag X"` with no pty. Without a pty,
+sshd sends the remote process no signal when the client disconnects.
+`tests/integration/test_ci_cancel.py` checks this against a real sshd. The
+deploy runs to completion, or reverts on its own failure, exactly as if the job
+were still watching. Its output to the closed session is discarded rather than
+crashing it. Check the host afterwards (`flow-deploy status`) to see how it
+ended.
 
 The deploy exits `1` when it failed and everything was put back. It exits `3`
 only when something couldn't be put back:
