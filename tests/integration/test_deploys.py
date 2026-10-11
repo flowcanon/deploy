@@ -1,5 +1,6 @@
 """flow-deploy against real containers: drain-first, rolling, and every revert path."""
 
+import json
 import os
 import time
 
@@ -132,6 +133,8 @@ def test_drain_that_hits_its_timeout_is_killed_and_the_deploy_continues(stack):
     assert stack.running()["worker"] == ["v2"]
     assert "(3s timeout)" in result.stdout
     assert time.time() - started >= 3
+    # The kill is reported: PID 1 should handle SIGTERM.
+    assert "didn't exit on SIGTERM within 3s and was killed" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -414,3 +417,113 @@ def test_another_project_with_other_services_in_the_directory_is_fine(stack):
         assert stack.running() == {"web": ["v2"], "scheduler": ["v2"], "worker": ["v2"]}
     finally:
         run(["docker", "rm", "-f", name], check=False)
+
+
+# ---------------------------------------------------------------------------
+# What an operator sees: kills, accessory drift, the run log, restore health,
+# and discovery without the app's env
+# ---------------------------------------------------------------------------
+
+ACCESSORY_LABELS = {"deploy.role": "accessory"}
+
+
+def accessory(value):
+    return {
+        "image": "${REGISTRY}/stub:v1",
+        "environment": {"SETTING": value},
+        "labels": ACCESSORY_LABELS,
+    }
+
+
+def test_rolling_cutover_that_has_to_kill_warns(stack):
+    stubborn = service(100, drain=2, env={"STUB_IGNORE_SIGTERM": "1"})
+    stack.commit("v1", standard(web=stubborn, scheduler=None, worker=None))
+    stack.commit("v2", standard(web=stubborn, scheduler=None, worker=None))
+    stack.up("v1")
+
+    result = stack.deploy("v2")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "web (" in result.stderr and "didn't exit on SIGTERM within 2s" in result.stderr
+
+
+def test_a_clean_deploy_warns_about_nothing(stack):
+    stack.commit("v1", standard(cache=accessory("a")))
+    stack.commit("v2", standard(cache=accessory("a")))
+    stack.up("v1")
+
+    result = stack.deploy("v2")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WARNING" not in result.stderr, result.stderr
+
+
+def test_accessory_config_drift_is_reported_and_left_alone(stack):
+    stack.commit("v1", standard(cache=accessory("a")))
+    stack.commit("v2", standard(cache=accessory("b")))
+    stack.up("v1")
+    cache = stack.container_ids("cache")
+
+    result = stack.deploy("v2")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "accessory cache's config changed since it started" in result.stderr
+    assert stack.container_ids("cache") == cache, "flow-deploy recreated an accessory"
+    status = stack.flow("status").stdout
+    assert "Accessory cache: config changed since it started" in status
+
+
+def test_every_deploy_leaves_a_host_side_log(stack):
+    stack.commit("v1", standard())
+    stack.commit("v2", standard())
+    stack.commit("v3", standard(worker=BAD_WORKER))
+    stack.up("v1")
+    assert stack.deploy("v2").returncode == 0
+    assert stack.deploy("v3").returncode == 1
+
+    text = (stack.repo / ".git" / "flow-deploy.log").read_text()
+    runs = text.split("===== flow-deploy run ")[1:]
+    assert len(runs) == 2
+    assert ": deploy --tag v2 =====" in runs[0] and runs[0].rstrip().endswith("exit 0 =====")
+    assert "worker failed to start" in runs[1] and runs[1].rstrip().endswith("exit 1 =====")
+    assert stack.git("status", "--porcelain") == "", "the log dirtied the tree"
+    assert ": deploy --tag v3: exit 1 (log: .git/flow-deploy.log)" in stack.flow("status").stdout
+    assert stack.record()["sha"] == stack.sha("v2")
+
+
+def test_a_revert_waits_for_restored_services_and_exits_3_if_unhealthy(stack):
+    """The worker was already failing its health check before the deploy; the
+    revert puts it back, waits, and says so rather than exiting 1."""
+    sick = service(300, "drain-first", env={"STUB_HEALTH": "fail"}, health_timeout=5)
+    stack.commit("v1", standard(worker=sick))
+    stack.commit("unhealthy", standard(worker=sick))
+    stack.up("v1", wait=False)
+
+    result = stack.deploy("unhealthy")
+
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "waiting for restored worker to be healthy" in result.stdout
+    assert "restored worker but it isn't healthy" in result.stdout
+    assert stack.head() == stack.sha("v1")
+    assert not stack.lock_exists()
+
+
+def test_discovery_works_without_the_apps_env(stack):
+    """CI has no .env: an image named only by an unset variable used to fail
+    compose config outright, and with it host discovery."""
+    compose = standard(scheduler=None, worker=None)
+    compose["services"]["worker"] = {
+        "image": "${APP_IMAGE_NOT_SET_IN_CI}",
+        "labels": {"deploy.role": "app", "deploy.order": "300"},
+    }
+    compose["x-deploy"] = {"host": "app-1.example.com", "user": "deploy", "dir": "/srv/app"}
+    stack.commit("v1", compose)
+    stack.git("checkout", "-q", "--detach", "v1")
+
+    result = stack.flow("config")
+
+    assert result.returncode == 0, result.stderr
+    hosts = json.loads(result.stdout)
+    assert hosts[0]["host"] == "app-1.example.com"
+    assert sorted(hosts[0]["services"]) == ["web", "worker"]
+    assert "(unset: APP_IMAGE_NOT_SET_IN_CI)" in result.stderr

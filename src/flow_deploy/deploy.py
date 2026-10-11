@@ -82,7 +82,7 @@ class _Run:
     previous_sha: str | None = None
     previous: dict[str, Previous] = field(default_factory=dict)
     drained: list[str] = field(default_factory=list)  # drain-first services touched
-    shipped: list[str] = field(default_factory=list)  # rolling services deployed
+    shipped: list[str] = field(default_factory=list)  # rolling services deployed or deploying
     aborted: str | None = None  # the rolling service whose own abort kept its old container
     whole_project: bool = True  # every app service is in this deploy
 
@@ -155,6 +155,17 @@ def deploy(
         _dry_run(tag, app_services)
         return EXIT_OK
 
+    return _deploy_guarded(compose_cmd, tag, tag_provided, services_filter)
+
+
+def _deploy_guarded(
+    compose_cmd: list[str], tag: str, tag_provided: bool, services_filter: list[str] | None
+) -> int:
+    """The deploy under its lock and signal handlers; always reverts on failure.
+
+    The run is logged to .git/flow-deploy.log while the lock is held, so a
+    deploy that's locked out never touches the log of the one running.
+    """
     # A signal (Ctrl-C, a timeout, a hung-up terminal) reverts like any other
     # failure. Handlers go in before the lock is taken, so no
     # signal can land between the two and skip cleanup.
@@ -168,6 +179,7 @@ def deploy(
 
     run = _Run(compose_cmd)
     locked = False
+    code = EXIT_FAILED
     try:
         # Acquire lock before any mutations (git checkout, container changes)
         locked = lock.acquire()
@@ -176,14 +188,19 @@ def deploy(
             pid = lock_info["pid"] if lock_info else "unknown"
             log.error(f"Deploy lock held by PID {pid}")
             return EXIT_LOCKED
-        return _deploy_locked(run, tag, tag_provided, services_filter)
+        log.open_run(
+            f"deploy --tag {tag}" + "".join(f" --service {s}" for s in services_filter or [])
+        )
+        code = _deploy_locked(run, tag, tag_provided, services_filter)
+        return code
     except (Exception, Interrupted) as exc:
         if isinstance(exc, Interrupted):
             reason = f"interrupted by signal {exc.signum}"
         else:
             reason = f"unexpected error: {exc!r}"
         log.error(f"{reason}; reverting")
-        return run.revert(reason)
+        code = run.revert(reason)
+        return code
     finally:
         # Ignore signals first, so one landing here can't skip the rest.
         for signum in HANDLED_SIGNALS:
@@ -191,6 +208,7 @@ def deploy(
         # Always released: a failed deploy puts things back rather than
         # leaving state for someone to clean up by hand.
         if locked:
+            log.close_run(code)
             lock.release()
         for signum, handler in originals.items():
             signal.signal(signum, handler)
@@ -233,6 +251,7 @@ def _deploy_locked(
     project = run.project
     compose_cmd = run.compose_cmd
     start_time = time.time()
+    _warn_accessory_drift(compose_dict, compose_cmd, project, {"DEPLOY_TAG": tag})
 
     # A release that renames the compose project would start a second stack
     # beside the running one, and snapshot (so revert) nothing.
@@ -274,13 +293,17 @@ def _deploy_locked(
 
     # Phase 2: rolling services, in deploy order, as before.
     for svc in rolling:
+        # Recorded before it's touched: a signal mid-service (during the
+        # health wait, say) then rolls it back like any shipped service,
+        # which keeps an old container that's still running.
+        run.shipped.append(svc.name)
         result = _deploy_service(svc, tag, compose_cmd, project=project)
         if result == SVC_DIRTY:
             dirty.append(svc.name)
         if result != SVC_OK and run.previous[svc.name].replicas:
+            run.shipped.pop()
             run.aborted = svc.name
             return failed("deploy aborted")  # its abort left the old container serving
-        run.shipped.append(svc.name)
         if result != SVC_OK:
             # Nothing ran before, so whatever the failed rollout left goes too.
             return failed("deploy aborted")
@@ -302,7 +325,7 @@ def _deploy_locked(
         return failed(f"{', '.join(failures)} failed to start")
 
     if run.whole_project:
-        deployed.write(tag)
+        deployed.write(tag, git.current_sha())
     else:
         # Services now run different tags; no one tag describes the host.
         deployed.clear()
@@ -399,6 +422,57 @@ def _restore_tag(prev: Previous, previous_sha: str | None, deploy_tag: str) -> s
             f"would restore it by the previous commit, {previous_sha[:12]}"
         )
     return previous_sha
+
+
+def _stop_reporting(name: str, ctr_id: str, timeout: int, isolate: bool = False) -> bool:
+    """docker stop, then warn if the container had to be killed.
+
+    A container that ignores SIGTERM waits out the whole timeout and is
+    SIGKILLed (exit 137), dropping whatever it was doing. Usually PID 1 is
+    a shell that doesn't forward signals. Reported, never fatal.
+    """
+    started = time.time()
+    if not containers.stop_container(ctr_id, timeout=timeout, isolate=isolate):
+        return False
+    took = time.time() - started
+    code = containers.exit_code(ctr_id)
+    if code == 137 or (timeout > 0 and took >= timeout):
+        log.warning(
+            f"{name} ({ctr_id[:7]}) didn't exit on SIGTERM within {timeout}s and was "
+            "killed; make sure its PID 1 handles SIGTERM (an exec-form CMD, or exec "
+            "in its entrypoint script)"
+        )
+    return True
+
+
+def _warn_accessory_drift(
+    compose_dict: dict, compose_cmd: list[str], project: str, env: dict[str, str]
+) -> None:
+    """Warn about accessories whose config changed since they were started.
+
+    flow-deploy never touches accessories, so the change lands on the next
+    manual `up -d`, which recreates them: plan it (data, downtime). Only a
+    warning; any trouble working it out is ignored.
+    """
+    for name in accessory_drift(compose_dict, compose_cmd, project, env):
+        log.warning(
+            f"accessory {name}'s config changed since it started; the next `up -d` "
+            "will recreate it. flow-deploy leaves it alone: plan that change."
+        )
+
+
+def accessory_drift(
+    compose_dict: dict, compose_cmd: list[str] | None, project: str, env: dict[str, str]
+) -> list[str]:
+    """Running accessories whose compose config hash no longer matches."""
+    names = [s.name for s in config.parse_services(compose_dict) if s.role == "accessory"]
+    wanted = compose.config_hashes(names, cmd=compose_cmd, env=env) or {}
+    drifted = []
+    for name in names:
+        running = containers.running_config_hashes(name, project=project)
+        if running and name in wanted and running != {wanted[name]}:
+            drifted.append(name)
+    return drifted
 
 
 def _degraded(problem: str) -> int:
@@ -509,7 +583,7 @@ def _drain_service(
         # The docker stop runs in its own session, so a terminal Ctrl-C (sent
         # to the whole foreground group) can't cut it short either.
         with _signals_deferred(f"finishing the drain of {ctr_id[:7]} first"):
-            stopped = containers.stop_container(ctr_id, timeout=svc.drain, isolate=True)
+            stopped = _stop_reporting(svc.name, ctr_id, svc.drain, isolate=True)
             removed = stopped and containers.remove_container(ctr_id)
         if not stopped:
             log.failure(f"could not stop {ctr_id[:7]}; it may still be running")
@@ -641,7 +715,9 @@ def _roll_back(prev: Previous, compose_cmd: list[str], project: str) -> bool:
         # The cutover's cleanup failed, so the previous image still runs beside
         # the new one. A rolling deploy can't tell them apart by tag here.
         log.step(f"{svc.name} still runs its previous image; removing the new container(s)")
-        return _remove_all(newer, timeout=svc.drain) and _scale_to_previous(prev, compose_cmd)
+        return _remove_all(newer, timeout=svc.drain) and _scale_to_previous(
+            prev, compose_cmd, project
+        )
     log.step(f"rolling {svc.name} back to {prev.restore_tag}...")
     return (
         _deploy_service(svc, prev.restore_tag, compose_cmd, project=project, pull=False) == SVC_OK
@@ -679,11 +755,11 @@ def _restore_drained(previous: list[Previous], compose_cmd: list[str], project: 
             log.step(f"{svc.name} was not running before the deploy; leaving it stopped")
             continue
         log.step(f"restoring {svc.name} on {prev.restore_tag} ({prev.replicas} replica(s))...")
-        ok = _scale_to_previous(prev, compose_cmd) and ok
+        ok = _scale_to_previous(prev, compose_cmd, project) and ok
     return ok
 
 
-def _scale_to_previous(prev: Previous, compose_cmd: list[str]) -> bool:
+def _scale_to_previous(prev: Previous, compose_cmd: list[str], project: str) -> bool:
     """Bring ``prev.svc`` to its previous replica count on its previous image.
 
     --no-recreate: containers already on that image are kept, never replaced.
@@ -697,7 +773,33 @@ def _scale_to_previous(prev: Previous, compose_cmd: list[str]) -> bool:
     )
     if result.returncode != 0:
         log.failure(f"could not restore {svc.name}: {result.stderr.strip()}")
-    return result.returncode == 0
+        return False
+    return _restored_healthy(svc, project, prev.replicas)
+
+
+def _restored_healthy(svc: config.ServiceConfig, project: str, replicas: int) -> bool:
+    """Check a restored service is back at ``replicas`` and passing its health check.
+
+    A revert isn't done until what it put back is serving: exit 3 if not,
+    including when a restored container exited straight away.
+    """
+    ctrs = containers.list_containers_for_service(
+        svc.name, project=project, statuses=("running", "restarting")
+    )
+    if ctrs is None:
+        log.failure(f"restored {svc.name} but can't list its containers to check health")
+        return False
+    if len(ctrs) < replicas:
+        log.failure(f"restored {svc.name} but only {len(ctrs)} of {replicas} containers are up")
+        return False
+    if svc.healthcheck_skip:
+        return True
+    log.step(f"waiting for restored {svc.name} to be healthy...")
+    for ctr in ctrs:
+        if not _wait_for_healthy(ctr["ID"], svc.healthcheck_timeout, svc.healthcheck_poll):
+            log.failure(f"restored {svc.name} but it isn't healthy ({ctr['ID'][:7]})")
+            return False
+    return True
 
 
 def _deploy_service(
@@ -773,7 +875,7 @@ def _deploy_service(
 
         # 5a. Cutover: stop old, remove old, scale back
         log.step(f"draining old container ({old_id[:7]}, {svc.drain}s timeout)...")
-        clean = containers.stop_container(old_id, timeout=svc.drain)
+        clean = _stop_reporting(svc.name, old_id, svc.drain)
         clean = containers.remove_container(old_id) and clean
         # Scale back only once the old container is gone: with two left, it
         # can only remove one, and compose might pick the new one.

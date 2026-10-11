@@ -145,7 +145,9 @@ def test_config_with_command(mock_config, mock_env, mock_discover):
     runner = CliRunner()
     result = runner.invoke(main, ["config", "--command", "docker compose"])
     assert result.exit_code == 0
-    mock_config.assert_called_once_with(cmd=["docker", "compose"])
+    mock_config.assert_called_once_with(
+        cmd=["docker", "compose"], env={"DEPLOY_TAG": "flow-deploy-lookup"}
+    )
 
 
 # Status with containers and the deployed tag: tests/test_deployed.py.

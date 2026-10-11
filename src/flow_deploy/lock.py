@@ -3,6 +3,7 @@
 Lock file lives in .git/ to avoid dirtying the working tree.
 """
 
+import fcntl
 import json
 import os
 import time
@@ -27,9 +28,18 @@ def acquire() -> bool:
     """Acquire the deploy lock. Returns True if acquired, False if held by another process.
 
     Automatically breaks stale locks (holding PID no longer running).
+
+    Acquirers take an flock on a guard file while they check and write the
+    lock, so two deploys starting together can't both see it free. The
+    kernel drops an flock when its holder exits, so the guard can't go stale.
     """
     path = _lock_path()
+    with open(path + ".guard", "a") as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        return _acquire(path)
 
+
+def _acquire(path: str) -> bool:
     if os.path.exists(path):
         try:
             with open(path) as f:

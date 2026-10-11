@@ -40,6 +40,8 @@ class Ctr:
     created: int
     state: str = "running"
     ref: str = ""  # what docker ps shows as Image; defaults to REPO:tag
+    config_hash: str = ""  # compose's config-hash label when it was created
+    exit_code: int | None = None
 
 
 def ok(out: str = "") -> process.Result:
@@ -67,6 +69,8 @@ class FakeHost:
         self.unhealthy_services: set[tuple[str, str]] = set()  # (service, tag) pairs
         self.stuck: set[str] = set()  # services whose compose up succeeds but changes nothing
         self.same_created = False  # docker ps shows one CreatedAt for every container
+        self.hashes: dict[str, str] = {}  # service -> config hash now (default hash-<svc>)
+        self.ignores_sigterm: set[str] = set()  # services docker stop has to SIGKILL
         self.other_projects: list[str] = []  # other projects running these services here
         self.foreign_services: list[tuple[str, str]] = []  # (project, service) running here
         self.failures: list[list] = []  # [substring, skip, remaining or None]
@@ -92,9 +96,13 @@ class FakeHost:
             created=next(self._clock),
             state=state,
             ref=ref or f"{REPO}:{tag}",
+            config_hash=self.config_hash(service),
         )
         self.ctrs.append(ctr)
         return ctr
+
+    def config_hash(self, service: str) -> str:
+        return self.hashes.get(service, f"hash-{service}")
 
     def fail(self, substring: str, times: int | None = None, skip: int = 0) -> None:
         """Fail commands containing ``substring``: after ``skip`` matches, ``times`` times."""
@@ -192,6 +200,9 @@ class FakeHost:
         raise AssertionError(f"FakeHost: unexpected git {args}")
 
     def _compose(self, args, tag):
+        if args[:1] == ["config"] and any(a.startswith("--hash=") for a in args):
+            names = next(a for a in args if a.startswith("--hash="))[7:].split(",")
+            return ok("".join(f"{n} {self.config_hash(n)}\n" for n in names))
         if args[:1] == ["config"]:
             return ok(yaml.safe_dump(self._rendered(tag)))
         if args[:1] == ["pull"]:
@@ -264,6 +275,9 @@ class FakeHost:
             if flag == "--filter" and value.startswith("status="):
                 statuses.append(value.split("=", 1)[1])
         statuses = statuses or ["running"]
+        if "config-hash" in args[-1]:
+            matched = [c for c in self.ctrs if c.service == service and c.state in statuses]
+            return ok("".join(c.config_hash + "\n" for c in matched))
         lines = [
             json.dumps(
                 {
@@ -283,6 +297,9 @@ class FakeHost:
         fmt = args[args.index("--format") + 1]
         ids = args[args.index("--format") + 2 :]
         by_id = {c.id: c for c in self.ctrs}
+        if fmt == "{{.State.ExitCode}}":
+            ctr = by_id.get(ids[0])
+            return ok(f"{ctr.exit_code}\n") if ctr else fail("No such container")
         if fmt == "{{.State.Health.Status}}":
             ctr = by_id.get(ids[0])
             if ctr is None:
@@ -297,6 +314,7 @@ class FakeHost:
         for ctr in self.ctrs:
             if ctr.id == ctr_id:
                 ctr.state = "exited"
+                ctr.exit_code = 137 if ctr.service in self.ignores_sigterm else 0
                 return ok()
         return fail("No such container")
 
