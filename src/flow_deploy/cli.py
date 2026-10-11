@@ -66,15 +66,24 @@ def tag_cmd():
     From the running app containers when they agree, else the last deploy's
     record. For scripts: DEPLOY_TAG=${DEPLOY_TAG:-$(flow-deploy tag)}.
     """
-    try:
-        tag, how = deployed.current()
-    except RuntimeError as e:
-        log.error(str(e))
-        sys.exit(1)
-    if tag is None:
-        log.error(f"can't tell which tag is deployed: {how}")
-        sys.exit(1)
+    tag, how = _deployed_tag()
     click.echo(tag)
+
+
+def _deployed_tag(compose_cmd: list[str] | None = None) -> tuple[str, str]:
+    """deployed.current(), or exit 1 with the reason.
+
+    The reason goes to stderr only, never as a GitHub Actions annotation on
+    stdout: scripts capture `flow-deploy tag`'s stdout as the tag.
+    """
+    try:
+        tag, how = deployed.current(compose_cmd)
+    except RuntimeError as e:
+        tag, how = None, str(e)
+    if tag is None:
+        click.echo(f"Error: can't tell which tag is deployed: {how}", err=True)
+        sys.exit(1)
+    return tag, how
 
 
 @main.command(
@@ -94,14 +103,7 @@ def compose_cmd(args):
     command = compose.resolve_command()
     tag = os.environ.get("DEPLOY_TAG")
     if not tag:
-        try:
-            tag, how = deployed.current(command)
-        except RuntimeError as e:
-            log.error(str(e))
-            sys.exit(1)
-        if tag is None:
-            log.error(f"can't tell which tag is deployed: {how}")
-            sys.exit(1)
+        tag, how = _deployed_tag(command)
         click.echo(f"DEPLOY_TAG={tag} (from {how})", err=True)
     sys.exit(process.run_streaming(command + list(args), env={"DEPLOY_TAG": tag}))
 

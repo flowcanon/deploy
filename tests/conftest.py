@@ -3,6 +3,12 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _not_on_github_actions(monkeypatch):
+    """Plain log output, as on a host; tests that need annotations set it."""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
+
 @pytest.fixture
 def mock_process(monkeypatch):
     """Mock process.run and process.run_streaming for tests."""
