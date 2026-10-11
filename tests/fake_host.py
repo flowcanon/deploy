@@ -57,13 +57,18 @@ class FakeHost:
         self.sha = "prev123abc"
         self.dirty = False
         self.ctrs: list[Ctr] = []
-        self.images: dict[str, str] = {}  # tags known locally or in the registry -> image id
+        self.images: dict[str, str] = {}  # local tags -> image id
+        # What the registry holds under tags not pulled yet (e.g. a commit SHA
+        # CI pushed); anything else pulls as image_id_for(tag).
+        self.registry: dict[str, str] = {}
+        self.not_refs: set[str] = {"latest"}  # image tags that aren't git refs
         self.unpullable: set[str] = set()  # tags compose pull can't fetch
         self.unhealthy: set[str] = set()  # tags whose containers never become healthy
         self.unhealthy_services: set[tuple[str, str]] = set()  # (service, tag) pairs
         self.stuck: set[str] = set()  # services whose compose up succeeds but changes nothing
         self.same_created = False  # docker ps shows one CreatedAt for every container
-        self.other_projects: list[str] = []  # other compose projects running in this dir
+        self.other_projects: list[str] = []  # other projects running these services here
+        self.foreign_services: list[tuple[str, str]] = []  # (project, service) running here
         self.failures: list[list] = []  # [substring, skip, remaining or None]
         self.hooks: list[tuple[str, object]] = []  # (substring, callback) run before a command
         self.calls: list[list[str]] = []
@@ -166,9 +171,9 @@ class FakeHost:
             return self._stop(args[-1])
         if args[:2] == ["docker", "rm"]:
             return self._rm(args[-1])
-        if args[:2] == ["docker", "tag"]:
-            self.images[args[3].rsplit(":", 1)[1]] = args[2]
-            return ok()
+        if args[:3] == ["docker", "image", "inspect"]:
+            image = self.images.get(args[-1].rsplit(":", 1)[-1])
+            return ok(image + "\n") if image else fail("No such image")
         raise AssertionError(f"FakeHost: unexpected command {line!r}")
 
     def _git(self, args):
@@ -176,6 +181,9 @@ class FakeHost:
             return ok(" M file\n" if self.dirty else "")
         if args[:1] == ["fetch"]:
             return ok()
+        if args[:2] == ["rev-parse", "--verify"]:
+            ref = args[-1].removesuffix("^{commit}")
+            return fail() if ref in self.not_refs or ref.startswith("sha256") else ok(ref)
         if args[:1] == ["rev-parse"]:
             return ok(self.sha + "\n")
         if args[:2] == ["checkout", "--detach"]:
@@ -189,7 +197,8 @@ class FakeHost:
         if args[:1] == ["pull"]:
             if tag in self.unpullable:
                 return fail(f"manifest for {REPO}:{tag} not found")
-            self.images.setdefault(tag, image_id_for(tag))
+            # A pull fetches what the registry has now, moving a re-pushed tag.
+            self.images[tag] = self.registry.get(tag) or self.images.get(tag) or image_id_for(tag)
             return ok()
         if args[:1] == ["up"]:
             return self._up(args, tag)
@@ -214,8 +223,10 @@ class FakeHost:
         replicas = 1
         if "--scale" in args:
             replicas = int(args[args.index("--scale") + 1].split("=")[1])
-        if tag not in self.images:
-            return fail(f"No such image: {REPO}:{tag}")
+        if tag not in self.images:  # compose pulls a missing image
+            if tag in self.unpullable:
+                return fail(f"No such image: {REPO}:{tag}")
+            self.images[tag] = self.registry.get(tag, image_id_for(tag))
         if service in self.stuck:
             return ok()
         live = self._live(service)
@@ -241,8 +252,10 @@ class FakeHost:
     def _ps(self, args):
         if any(a.startswith("label=com.docker.compose.project.working_dir=") for a in args):
             # Compose project names of everything running in this directory.
-            projects = [self.project] * len(self.ctrs) + self.other_projects
-            return ok("".join(p + "\n" for p in projects))
+            rows = [(self.project, c.service) for c in self.ctrs if c.state == "running"]
+            rows += [(p, c.service) for p in self.other_projects for c in self.ctrs]
+            rows += self.foreign_services
+            return ok("".join(f"{p} {s}\n" for p, s in rows))
         service = None
         statuses = []
         for flag, value in zip(args, args[1:]):

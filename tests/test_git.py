@@ -6,6 +6,7 @@ from flow_deploy.git import (
     current_sha,
     fetch,
     is_dirty,
+    is_ref,
     preflight_and_checkout,
     restore,
 )
@@ -123,3 +124,17 @@ def test_restore_success(mock_process, capsys):
 def test_restore_failure(mock_process):
     mock_process.responses.append(_err("checkout error"))
     assert restore("prev123") is False
+
+
+def test_is_ref(mock_process):
+    mock_process.responses.append(_ok())
+    mock_process.responses.append(process.Result(1, "", ""))
+    assert is_ref("v1.4.0") is True
+    assert mock_process.calls[0][1] == [
+        "git",
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        "v1.4.0^{commit}",
+    ]
+    assert is_ref("latest") is False

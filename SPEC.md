@@ -40,17 +40,18 @@ The deploy runs as a single transaction — `flow-deploy deploy` owns the full l
 0c. Record previous SHA     previous_sha = git rev-parse HEAD
 0d. Checkout (detached)     git checkout --detach <tag>   (skipped when --tag is omitted)
 0e. Render config           DEPLOY_TAG=<tag> <compose-command> config
-0f. Project check            docker ps by compose's working_dir label: containers
-                             of another compose project here → refuse
+0f. Project check            docker ps by compose's working_dir and service labels:
+                             another compose project running these services here → refuse
 0g. Snapshot                for each app service: docker ps (running + restarting),
                              docker inspect → image IDs; the most common one is
-                             "previous" (warn if they differ), aliased as
-                             docker tag <id> <repo>:flow-deploy-<full image id>
-                             in the config's repo and the container's own
-                             If any of this fails → restore repo, exit 1
+                             "previous" (warn if they differ). Its restore tag is the
+                             tag it was started from if that's a git ref
+                             (git rev-parse --verify) still naming that image
+                             (docker image inspect) and isn't <tag>; else <previous_sha>
+                             If listing or inspecting fails → restore repo, exit 1
 ```
 
-The snapshot is what a revert restores: the exact image each service was running, whatever tag (or none) it was started from (§2.8).
+The snapshot is what a revert restores: the image each service was running, named by a git tag or commit SHA (§2.8).
 
 **For each service with `deploy.role=app`, in the order they appear in the compose file:**
 
@@ -81,17 +82,17 @@ R1. Restore repo             git checkout --detach <previous_sha>
 R1b. Failed service          remove stopped containers its abort couldn't remove
 R2. Roll back shipped        for each rolling service that already deployed, in reverse order:
                                remove its stopped leftovers (compose would restart them), then
-                               DEPLOY_TAG=<alias> rolling deploy (no pull) back to its
+                               DEPLOY_TAG=<restore tag> rolling deploy (no pull) back to its
                                previous image; if a container on the previous image
                                survived the cutover, remove the new ones instead;
                                a service that had no containers is removed
 R3. Restore drain-first      for each drained service, in deploy order:
                                remove its stopped leftovers on other images,
                                stop + remove containers not on its previous image,
-                               DEPLOY_TAG=<alias> <compose-command> up -d --no-deps
+                               DEPLOY_TAG=<restore tag> <compose-command> up -d --no-deps
                                  --no-recreate --scale <service>=<previous replicas>
                                (left stopped if it wasn't running before)
-R4. Record                   .git/deploy-tag = the restored alias (cleared if services differ)
+R4. Record                   .git/deploy-tag = the restore tag (cleared if services differ)
 R5. Release the lock         always
 ```
 
@@ -260,11 +261,11 @@ services:
     # or image: ${DOCKER_IMAGE}, with DOCKER_IMAGE=ghcr.io/myorg/myapp:${DEPLOY_TAG:-latest} in .env
 ```
 
-CI must push the image under every tag it may deploy by (the version, and the SHA as a fallback). The deploy renders its compose config with `DEPLOY_TAG` set and warns when an app image doesn't end in `:<tag>`; such a service keeps whatever image the compose file names.
+CI must push the image under every tag it may deploy by: the version, and always the full commit SHA, which a revert falls back to. The deploy renders its compose config with `DEPLOY_TAG` set and warns when an app image doesn't end in `:<tag>`; such a service keeps whatever image the compose file names.
 
-**What's running.** Restores never trust a tag name. The pre-deploy snapshot (§2.2, 0g) records each service's running image ID and tags it locally as `<repo>:flow-deploy-<image id>` (the full ID, so it can't collide), under both the new compose config's repo and the repo the container was started from. A revert deploys that alias, so it gets the exact image back even when the service was started from `:latest`, from a tag re-pushed since, from a digest, or untagged. If an alias can't be created the deploy stops before changing anything. Aliases are local only and are never pushed.
+**What's running.** Restores are named by git: a release tag or a commit SHA. The pre-deploy snapshot (§2.2, 0g) records each service's running image ID and the tag it was started from. A revert uses that tag when it is a git ref, still names the running image locally, and isn't the tag being deployed (the deploy pulls that, which would move a re-pushed tag). Otherwise (started from `:latest`, from a tag re-pushed since, from a digest, untagged, or a redeploy of the same tag) it uses the full SHA of the commit checked out before the deploy, so CI must push every image under its full commit SHA. If that image isn't in the registry the restore fails and the deploy exits 3. Redeploying the commit that's already checked out leaves no other git name for the running build: if its image was rebuilt under the same tag, a revert restores the rebuild, and the deploy warns up front. flow-deploy creates no tags and writes nothing in the working tree.
 
-**What's deployed.** `flow-deploy tag` (§4.7) answers "which tag is deployed here": the tag of the running app containers when they all agree; otherwise, when nothing is running, `.git/deploy-tag`. Mixed or untagged images are an error, never a guess. The record is written after every successful deploy of all app services, rewritten to the restored alias after a revert (running containers still take precedence: one that kept its old container shows its old tag), and cleared by a `--service` deploy that leaves some app services out (they're then on different tags).
+**What's deployed.** `flow-deploy tag` (§4.7) answers "which tag is deployed here": the tag of the running app containers when they all agree; if they run one image under `:latest` and one other tag (after a revert from `:latest`), that other tag; otherwise, when nothing is running, `.git/deploy-tag`. Anything else mixed, or untagged, is an error, never a guess. The record is written after every successful deploy of all app services, rewritten to the restore tag after a revert, and cleared by a `--service` deploy that leaves some app services out (they're then on different tags).
 
 **Manual commands.** With `${DEPLOY_TAG:-latest}`, running `<compose-command> up -d` on the host with `DEPLOY_TAG` unset would move every service to `:latest`. Use `flow-deploy compose <args>` (§4.8), which sets `DEPLOY_TAG` to the deployed tag, or have the wrapper default it (§3.1).
 
@@ -419,7 +420,7 @@ Print the deployed tag (§2.8) to stdout, and nothing else, for scripts:
 DEPLOY_TAG=${DEPLOY_TAG:-$(flow-deploy tag)}
 ```
 
-Exits 1 with the reason on stderr when it can't tell (mixed or untagged images, or nothing running and no record).
+Exits 1 with the reason on stderr when it can't tell (images that disagree or are untagged, as in §2.8, or nothing running and no record).
 
 ### 4.8 `flow-deploy compose`
 

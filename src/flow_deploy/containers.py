@@ -41,10 +41,13 @@ def list_containers_for_service(
     return containers
 
 
-def other_projects_here(project: str) -> set[str] | None:
-    """Compose projects other than ``project`` with running containers in this directory.
+def other_projects_here(project: str, services: list[str]) -> set[str] | None:
+    """Other compose projects running any of ``services`` in this directory.
 
-    Read from compose's working_dir label. None if docker ps fails.
+    A release that renamed the project would show up this way: the old
+    project's containers run the same services. Another project that merely
+    shares the directory (different services) doesn't count. Read from
+    compose's working_dir and service labels. None if docker ps fails.
     """
     cwd = os.getcwd()
     dirs = {cwd}
@@ -62,12 +65,15 @@ def other_projects_here(project: str) -> set[str] | None:
                 "--filter",
                 f"label=com.docker.compose.project.working_dir={d}",
                 "--format",
-                '{{.Label "com.docker.compose.project"}}',
+                '{{.Label "com.docker.compose.project"}} {{.Label "com.docker.compose.service"}}',
             ]
         )
         if result.returncode != 0:
             return None
-        found |= {line.strip() for line in result.stdout.splitlines() if line.strip()}
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1] in services:
+                found.add(parts[0])
     return found - {project}
 
 
@@ -172,6 +178,7 @@ def image_ids(container_ids: list[str]) -> dict[str, str] | None:
     return found
 
 
-def tag_image(image_id: str, ref: str) -> bool:
-    """Point the local tag ``ref`` at ``image_id``. Returns True on success."""
-    return process.run(["docker", "tag", image_id, ref]).returncode == 0
+def local_image_id(ref: str) -> str | None:
+    """The ID of the local image ``ref`` names (``repo:tag``), or None if there's none."""
+    result = process.run(["docker", "image", "inspect", "--format", "{{.Id}}", ref])
+    return result.stdout.strip() or None if result.returncode == 0 else None

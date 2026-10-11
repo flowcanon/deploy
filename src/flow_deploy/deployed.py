@@ -65,16 +65,15 @@ def current(compose_cmd: list[str] | None = None) -> tuple[str | None, str]:
             ids.append(ctr["ID"])
     if len(tags) == 1 and None not in tags:
         return next(iter(tags)), "running containers"
-    if len(tags) > 1 and None not in tags:
-        # After a revert, a recreated service runs the flow-deploy-<id> alias of
-        # the image a kept container still runs under its old tag: one image,
-        # two names. The alias names it exactly, so it answers.
+    if len(tags) > 1 and None not in tags and len(tags.keys() - {"latest"}) == 1:
+        # After a revert from :latest, a recreated service runs the previous
+        # commit's SHA while a kept container still says :latest. If they run
+        # one image, the SHA names it.
         images = containers.image_ids(ids)
         if images is None:
             raise RuntimeError("could not inspect the app containers (docker inspect failed)")
-        aliases = sorted(t for t in tags if t.startswith("flow-deploy-"))
-        if len(set(images.values())) == 1 and aliases:
-            return aliases[0], "running containers (one image under several tags)"
+        if len(set(images.values())) == 1:
+            return (tags.keys() - {"latest"}).pop(), "running containers (one image)"
     if tags:
         seen = ", ".join(
             f"{t or 'untagged'} ({', '.join(sorted(set(s)))})" for t, s in tags.items()
