@@ -5,10 +5,13 @@ flow-deploy fetches) holding one tagged commit per compose variant, and a
 compose project of stub services pulled from a local registry. flow-deploy
 runs as a real subprocess, so tests can signal it, against real Docker.
 
-Run with:  poetry run pytest -m integration --no-cov
+Run with:  poetry run pytest -m integration --no-cov -n auto
+(-n auto runs the tests in parallel, one per core; drop it to run them in order.)
 Skipped automatically when Docker isn't available.
 """
 
+import contextlib
+import fcntl
 import json
 import os
 import shutil
@@ -55,9 +58,11 @@ def docker():
         pytest.skip("Docker Compose is too old: `docker compose up --wait` is required")
 
 
-@pytest.fixture(scope="session")
-def registry(docker):
-    """A local registry:2 with the stub image pushed under each STUB_TAGS tag."""
+def _start_registry() -> tuple[str, str]:
+    """Start a local registry:2 and push the stub image under each STUB_TAGS tag.
+
+    Returns (host, container name).
+    """
     name = f"flowdeploy-it-registry-{uuid.uuid4().hex[:8]}"
     run(["docker", "run", "-d", "--name", name, "-p", "127.0.0.1::5000", "registry:2"])
     try:
@@ -75,9 +80,57 @@ def registry(docker):
         # :latest starts out as v1, as a host first brought up by hand would be.
         run(["docker", "tag", f"{host}/stub:v1", f"{host}/stub:latest"])
         run(["docker", "push", "-q", f"{host}/stub:latest"])
-        yield host
-    finally:
+    except BaseException:
         run(["docker", "rm", "-f", name], check=False)
+        raise
+    return host, name
+
+
+@contextlib.contextmanager
+def _locked(path: Path):
+    with open(path, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+
+
+@pytest.fixture(scope="session")
+def registry(docker, request, tmp_path_factory):
+    """A local registry with the stub images, shared by every test.
+
+    Under pytest-xdist (`-n auto`) every worker shares one: the first to need
+    it starts it, and the last to finish removes it. Tests only push tags
+    unique to them (per-stack commit SHAs, pid-stamped names), so sharing is
+    safe.
+    """
+    if not hasattr(request.config, "workerinput"):  # not under xdist
+        host, name = _start_registry()
+        try:
+            yield host
+        finally:
+            run(["docker", "rm", "-f", name], check=False)
+        return
+
+    shared = tmp_path_factory.getbasetemp().parent  # the same for every worker
+    state = shared / "registry.json"
+    with _locked(shared / "registry.lock"):
+        if state.exists():
+            data = json.loads(state.read_text())
+        else:
+            host, name = _start_registry()
+            data = {"host": host, "name": name, "users": 0}
+        data["users"] += 1
+        state.write_text(json.dumps(data))
+    try:
+        yield data["host"]
+    finally:
+        with _locked(shared / "registry.lock"):
+            data = json.loads(state.read_text())
+            data["users"] -= 1
+            if data["users"] == 0:
+                run(["docker", "rm", "-f", data["name"]], check=False)
+                state.unlink()
+            else:
+                state.write_text(json.dumps(data))
 
 
 def service(
@@ -137,7 +190,9 @@ class Stack:
         self.repo = root / "repo"
         run(["git", "init", "-q", "--bare", str(self.origin)])
         run(["git", "init", "-q", "-b", "main", str(self.repo)])
-        self.git("config", "user.email", "it@example.com")
+        # A per-stack author makes every commit SHA unique, so stacks pushing
+        # images under their SHAs can't collide in the shared registry.
+        self.git("config", "user.email", f"it-{self.project}@example.com")
         self.git("config", "user.name", "it")
         self.git("config", "commit.gpgsign", "false")
         self.git("remote", "add", "origin", str(self.origin))
@@ -165,7 +220,19 @@ class Stack:
         """Commit ``compose`` as docker-compose.yml, tag it ``tag`` (unless None), push.
 
         ``force`` moves an existing tag, here and on origin, as a re-release does.
+
+        Every service gets ``network_mode: none``: the stubs never talk to each
+        other (health checks run inside each container), and without it each
+        stack's default network uses up one of Docker's address pools, which
+        run out at a few dozen, well short of running in parallel.
         """
+        compose = {
+            **compose,
+            "services": {
+                name: {"network_mode": "none", **svc}
+                for name, svc in compose.get("services", {}).items()
+            },
+        }
         (self.repo / "docker-compose.yml").write_text(yaml.safe_dump(compose, sort_keys=False))
         self.git("add", "docker-compose.yml")
         self.git("commit", "-q", "--allow-empty", "-m", tag or "untagged")

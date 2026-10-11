@@ -21,7 +21,7 @@ import pytest
 
 from tests.integration.conftest import IMAGES, SRC, run
 
-PROBE_SECONDS = 6
+PROBE_SECONDS = 4  # killed ~1s in; long enough to tell running on from dead
 
 
 @pytest.fixture(scope="module")

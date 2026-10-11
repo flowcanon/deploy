@@ -23,6 +23,8 @@ autoflake = "^2.3"
 pytest = "^8.0"
 pytest-cov = "^6.0"
 pytest-randomly = "^3.16"
+pytest-xdist = "^3.6"
+pytest-split = "^0.10"
 
 [tool.poetry.scripts]
 flow-deploy = "flow_deploy.cli:main"
@@ -41,7 +43,7 @@ line_length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Integration tests (real Docker) run separately: pytest -m integration --no-cov
+# Integration tests (real Docker) run separately, in parallel: pytest -m integration --no-cov -n auto
 addopts = "-v --tb=short --cov=flow_deploy --cov-report=term-missing -m 'not integration'"
 markers = ["integration: needs a real Docker daemon (tests/integration)"]
 

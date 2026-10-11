@@ -7,6 +7,11 @@ on:
 
 jobs:
   lint:
+    # A release (the release PR, and its chore(release) commit on master)
+    # only bumps the version and CHANGELOG: nothing to test.
+    if: >-
+      !(github.event_name == 'pull_request' && github.head_ref == 'release')
+      && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(release):'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +29,11 @@ jobs:
         run: script/lint
 
   test:
+    # A release (the release PR, and its chore(release) commit on master)
+    # only bumps the version and CHANGELOG: nothing to test.
+    if: >-
+      !(github.event_name == 'pull_request' && github.head_ref == 'release')
+      && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(release):'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,9 +52,21 @@ jobs:
 
   # Real containers: a local registry, stub services, and an sshd, driven by
   # flow-deploy as a subprocess. Kept out of the unit job's coverage gate.
+  # Sharded across runners (pytest-split, balanced by the recorded
+  # tests/integration/.test_durations); locally, run it with -n auto instead.
   integration:
+    # A release (the release PR, and its chore(release) commit on master)
+    # only bumps the version and CHANGELOG: nothing to test.
+    if: >-
+      !(github.event_name == 'pull_request' && github.head_ref == 'release')
+      && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(release):'))
+    name: integration (${{ matrix.group }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
 
@@ -58,4 +80,8 @@ jobs:
           poetry install --with test
 
       - name: Integration tests
-        run: poetry run pytest -m integration --no-cov -p no:randomly
+        run: >-
+          poetry run pytest -m integration --no-cov -p no:randomly
+          --splits 4 --group ${{ matrix.group }}
+          --splitting-algorithm least_duration
+          --durations-path tests/integration/.test_durations
