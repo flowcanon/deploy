@@ -86,6 +86,7 @@ def record(deploy_module, process_module, name, workdir):
     if transform:
         config = transform(config)
     host = FakeHost(config, running=running)
+    host.wrapper_requires_tag = False  # master's config call didn't pass DEPLOY_TAG
     if setup:
         setup(host)
     process_module.run = host.run

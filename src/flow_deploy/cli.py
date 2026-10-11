@@ -51,7 +51,10 @@ def status():
         ended = f"exit {code}" if code is not None else "no exit recorded (running, or killed)"
         log.info(f"Last deploy: {header}: {ended} (log: {log.RUN_LOG})")
     project = compose_dict.get("name", "")
-    for name in deploy_mod.accessory_drift(compose_dict, None, project, {"DEPLOY_TAG": tag or ""}):
+    # The deployed tag, or the placeholder when it's unknown: never empty, or a
+    # fail-closed wrapper would exit and the check would quietly say nothing.
+    drift_env = {"DEPLOY_TAG": tag or deployed.LOOKUP_PLACEHOLDER}
+    for name in deploy_mod.accessory_drift(compose_dict, None, project, drift_env):
         log.info(f"Accessory {name}: config changed since it started; next `up -d` recreates it")
     log.info("")
 
@@ -126,8 +129,19 @@ def exec_cmd(service, command):
         click.echo("Error: No command specified", err=True)
         sys.exit(1)
     compose_cmd = compose.resolve_command()
-    code = process.run_streaming(compose_cmd + ["exec", service] + list(command))
+    code = process.run_streaming(compose_cmd + ["exec", service] + list(command), env=_tag_env())
     sys.exit(code)
+
+
+def _tag_env() -> dict[str, str]:
+    """DEPLOY_TAG for compose calls whose image doesn't matter (exec, logs).
+
+    An explicit DEPLOY_TAG wins; otherwise the lookup placeholder, so a
+    wrapper that defaults DEPLOY_TAG from `flow-deploy tag` never has to ask.
+    """
+    import os
+
+    return {"DEPLOY_TAG": os.environ.get("DEPLOY_TAG") or deployed.LOOKUP_PLACEHOLDER}
 
 
 @main.command()
@@ -143,7 +157,7 @@ def logs(service, follow, tail):
     if tail is not None:
         args.extend(["--tail", str(tail)])
     args.append(service)
-    code = process.run_streaming(compose_cmd + args)
+    code = process.run_streaming(compose_cmd + args, env=_tag_env())
     sys.exit(code)
 
 
