@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from tests.integration.conftest import SIGNALS, service, standard
+from tests.integration.conftest import SIGNALS, run, service, standard
 
 ALL_V1 = {"web": ["v1"], "scheduler": ["v1"], "worker": ["v1"]}
 SERVICES = ("web", "scheduler", "worker")
@@ -181,19 +181,21 @@ def test_lock_held_by_a_live_process_exits_2_and_changes_nothing(stack):
     assert lock.exists(), "another process's lock was released"
 
 
-def test_digest_pinned_worker_is_restored_to_the_same_image(stack):
-    """A worker started from a digest (no tag at all) is restored by image ID."""
+def test_digest_pinned_worker_is_restored_by_the_previous_commit(stack):
+    """A worker started from a digest has no tag to go back to: it's restored
+    by the SHA of the commit that was checked out, which CI pushes."""
     pinned_worker = service(
         300, "drain-first", image="${WORKER_IMAGE:-${REGISTRY}/stub:${DEPLOY_TAG:-latest}}"
     )
-    stack.commit("v1", standard(worker=pinned_worker))
+    v1 = stack.commit("v1", standard(worker=pinned_worker))
+    stack.push_image("v1", v1)
     stack.commit("unhealthy", standard(worker=pinned_worker))
     stack.up("v1", extra={"WORKER_IMAGE": stack.digest("v1")})
 
     result = stack.deploy("unhealthy")
 
     assert_reverted(stack, ALL_V1, result.returncode, result.stdout)
-    assert stack.image_refs("worker")[0].split(":")[-1].startswith("flow-deploy-")
+    assert stack.image_refs("worker") == [f"{stack.registry}/stub:{v1}"]
 
 
 def test_crash_looping_drain_first_worker_is_drained(stack):
@@ -279,24 +281,26 @@ def test_failed_deploy_restores_the_version_that_was_running(stack):
         result.stdout,
         previous="v2",
     )
-    # Restored by an alias of the exact image; the record follows it. The
-    # worker kept its v2 container, web was recreated on the alias: one image.
-    tag = stack.record()["tag"]
-    assert tag.startswith("flow-deploy-")
-    assert stack.flow("tag").stdout == f"{tag}\n"
+    # Restored by the release tag that was running; no tags made on the host.
+    assert stack.record()["tag"] == "v2"
+    assert stack.flow("tag").stdout == "v2\n"
+    assert stack.image_refs("web") == [f"{stack.registry}/stub:v2"]
+    local = run(["docker", "images", "--format", "{{.Tag}}", f"{stack.registry}/stub"]).stdout
+    assert "flow-deploy" not in local
     assert stack.flow("compose", "up", "-d", "--wait").returncode == 0
     assert stack.running() == {"web": ["v2"], "scheduler": ["v2"], "worker": ["v2"]}
 
 
-def test_first_deploy_from_latest_restores_that_image_after_latest_moves(stack):
-    """A host brought up by hand runs :latest. If :latest is re-pushed and
-    pulled before a failed deploy, the revert still restores the image that
-    was running, not what :latest names now."""
+def test_first_deploy_from_latest_restores_by_the_previous_commit(stack):
+    """A host brought up by hand runs :latest, which isn't a git ref and moves.
+    Even after it's re-pushed and pulled, the revert restores the image that
+    was running, by the SHA of the commit that was checked out."""
     latest = f"latest-{os.getpid()}-{int(time.time())}"  # don't move the shared :latest
     stack.push_image("v1", latest)
     image = f"${{REGISTRY}}/stub:${{DEPLOY_TAG:-{latest}}}"
     by_hand = standard(**{s: {**standard()["services"][s], "image": image} for s in SERVICES})
-    stack.commit("v1", by_hand)
+    v1 = stack.commit("v1", by_hand)
+    stack.push_image("v1", v1)  # CI pushes every build under its SHA
     bad = {**BAD_WORKER, "image": image}
     stack.commit("v3", {"services": {**by_hand["services"], "worker": bad}})
     stack.up(None, ref="v1")
@@ -373,8 +377,40 @@ def test_containers_of_another_project_name_here_are_refused(stack):
         result = stack.deploy("v2")
 
         assert result.returncode == 1, result.stdout + result.stderr
-        assert f"compose project(s) {other} are running" in result.stderr
+        assert f"compose project(s) {other} run this deploy's services" in result.stderr
         assert {svc: stack.container_ids(svc) for svc in SERVICES} == before
         assert stack.head() == stack.sha("v1")
     finally:
         stack.compose("-p", other, "down", "--timeout", "1", check=False)
+
+
+def test_another_project_with_other_services_in_the_directory_is_fine(stack):
+    """A second compose project that shares the directory but runs different
+    services (say, an observability stack) isn't a rename: deploy proceeds."""
+    stack.commit("v1", standard())
+    stack.commit("v2", standard())
+    stack.up("v1")
+    name = f"{stack.project}-obs"
+    run(
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            name,
+            "--label",
+            f"com.docker.compose.project={stack.project}obs",
+            "--label",
+            "com.docker.compose.service=grafana",
+            "--label",
+            f"com.docker.compose.project.working_dir={stack.repo}",
+            f"{stack.registry}/stub:v1",
+        ]
+    )
+    try:
+        result = stack.deploy("v2")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert stack.running() == {"web": ["v2"], "scheduler": ["v2"], "worker": ["v2"]}
+    finally:
+        run(["docker", "rm", "-f", name], check=False)

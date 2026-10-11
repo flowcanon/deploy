@@ -10,10 +10,10 @@ from flow_deploy.containers import (
     image_ids,
     image_repo,
     image_tag,
+    local_image_id,
     other_projects_here,
     remove_container,
     stop_container,
-    tag_image,
 )
 
 
@@ -179,19 +179,28 @@ def test_image_ids_missing_container(mock_process):
     assert image_ids(["aaa111", "ccc333"]) is None
 
 
-def test_tag_image(mock_process):
-    mock_process.responses.append(process.Result(0, "", ""))
-    mock_process.responses.append(process.Result(1, "", "no such image"))
-    assert tag_image("sha256:one", "app:flow-deploy-one") is True
-    assert mock_process.calls[0][1] == ["docker", "tag", "sha256:one", "app:flow-deploy-one"]
-    assert tag_image("sha256:two", "app:flow-deploy-two") is False
+def test_local_image_id(mock_process):
+    mock_process.responses.append(process.Result(0, "sha256:one\n", ""))
+    mock_process.responses.append(process.Result(1, "", "No such image"))
+    assert local_image_id("app:v1") == "sha256:one"
+    assert mock_process.calls[0][1] == [
+        "docker",
+        "image",
+        "inspect",
+        "--format",
+        "{{.Id}}",
+        "app:v1",
+    ]
+    assert local_image_id("app:v9") is None
 
 
 def test_other_projects_here(mock_process, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PWD", str(tmp_path))
-    mock_process.responses.append(process.Result(0, "proj\nproj\nold\n\n", ""))
-    assert other_projects_here("proj") == {"old"}
+    out = "proj web\nproj worker\nold web\nobs grafana\n\n"
+    mock_process.responses.append(process.Result(0, out, ""))
+    # obs shares the directory but runs none of these services: not a rename.
+    assert other_projects_here("proj", ["web", "worker"]) == {"old"}
     args = mock_process.calls[0][1]
     assert f"label=com.docker.compose.project.working_dir={tmp_path}" in args
 
@@ -204,8 +213,8 @@ def test_other_projects_here_checks_the_shell_path_too(mock_process, monkeypatch
     monkeypatch.chdir(real)
     monkeypatch.setenv("PWD", str(tmp_path / "link"))
     mock_process.responses.append(process.Result(0, "", ""))
-    mock_process.responses.append(process.Result(0, "other\n", ""))
-    assert other_projects_here("proj") == {"other"}
+    mock_process.responses.append(process.Result(0, "other web\n", ""))
+    assert other_projects_here("proj", ["web"]) == {"other"}
     assert len(mock_process.calls) == 2
 
 
@@ -213,7 +222,7 @@ def test_other_projects_here_ignores_an_inherited_pwd(mock_process, monkeypatch,
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PWD", "/somewhere/else")
     mock_process.responses.append(process.Result(0, "", ""))
-    assert other_projects_here("proj") == set()
+    assert other_projects_here("proj", ["web"]) == set()
     assert len(mock_process.calls) == 1
 
 
@@ -221,4 +230,4 @@ def test_other_projects_here_failure(mock_process, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("PWD", raising=False)
     mock_process.responses.append(process.Result(1, "", "daemon down"))
-    assert other_projects_here("proj") is None
+    assert other_projects_here("proj", ["web"]) is None

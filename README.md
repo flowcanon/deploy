@@ -136,17 +136,24 @@ A rollback runs old code against whatever the new code already did (a
 migration, say), so this relies on the usual expand-then-contract discipline:
 old code keeps working against the new schema.
 
-What "previous" means is read from the containers, not from git or `:latest`.
-Before changing anything, the deploy records the image each app service is
-running (the most common one if its containers disagree, with a warning) and
-gives it a local alias, `<repo>:flow-deploy-<image id>`. A revert runs
-`compose up` with that alias in `DEPLOY_TAG`, so it restores the exact image
-even if the service was started from `:latest`, from a tag that has since been
-re-pushed, from a digest, or from no tag at all. See [Image Tags](#image-tags).
-If an image can't be aliased, or containers of a differently named compose
-project run in the same directory (a release that renamed the project would
-start a second stack beside the first), the deploy stops before changing
-anything.
+What "previous" means is read from the containers, and named by git. Before
+changing anything, the deploy records the image each app service is running
+(the most common one if its containers disagree, with a warning) and the tag
+it was started from. A revert runs `compose up` with that tag in `DEPLOY_TAG`
+when it's a git ref (a release tag or a commit SHA) that still names the
+running image and isn't the tag being deployed (which this deploy pulls).
+Otherwise (`:latest`, a tag re-pushed since, a digest, no tag, a redeploy of
+the same tag)
+it uses the SHA of the commit that was checked out before the deploy, so CI
+must push every image under its full commit SHA (see [Image Tags](#image-tags)).
+One case has no git name for the previous build: redeploying the commit that's
+already running. If its image was rebuilt and re-pushed under the same tag, a
+revert restores that commit as pulled now; the deploy warns when it sees this.
+(Before this release, shipped services weren't rolled back at all.)
+Nothing is tagged or written on the host. If another compose project runs this
+deploy's services in the same directory (a release that renamed the project
+would start a second stack beside the first), the deploy stops before
+changing anything.
 
 A signal reverts the same way, and so does an unexpected error. The signals are
 SIGTERM (a timeout or shutdown), Ctrl-C (SIGINT), and SIGHUP (a hung-up
@@ -189,7 +196,7 @@ The deliberate changes for rolling-only projects, each pinned by that test:
 
 - A later service's failure rolls back services that already shipped.
   Previously they stayed on the new tag beside services on the old one.
-- The deploy snapshots and aliases each service's running image first.
+- The deploy records each service's running image and restore tag first.
 - `git fetch --tags --force origin`, so release tags arrive and a re-pushed
   tag moves.
 - `compose config` is rendered with the deploy's `DEPLOY_TAG`.
@@ -221,7 +228,8 @@ services:
 just as well. The tag is used twice: `git checkout --detach <tag>` (lightweight
 and annotated tags and SHAs all work; tags are fetched with `--force`, so a
 re-pushed tag moves), and as the image tag compose pulls and runs. CI pushes the
-image under every tag it might deploy by, typically the version and the SHA. The
+image under every tag it might deploy by: the version, and always the full
+commit SHA, which is also what a revert falls back to. The
 compose file must name each app image with it:
 
 ```yaml
@@ -250,12 +258,10 @@ The deployed tag is read from the running app containers when they all agree,
 else from `.git/deploy-tag` (written by every successful whole-project deploy)
 when nothing is running. Mixed or untagged images, or nothing to go on, are an
 error ("set DEPLOY_TAG"), never a guess. `flow-deploy status` shows it too.
-After a revert, services recreated from the snapshot run the
-`flow-deploy-<image id>` alias of their previous image, and the record holds it;
-a service that kept its old container still shows its old tag. Either way the
-image is the one that ran before, and when every service runs that one image
-the deployed tag is the alias. An alias is a local tag: `flow-deploy compose
-up` works with it, `pull` won't. The next deploy replaces it.
+After a revert, the deployed tag is the release tag or SHA that was
+restored. After a revert from `:latest`, a kept container still says `latest`
+while recreated ones run the previous SHA; when they all run one image, the
+SHA is the answer.
 
 If the project has a compose wrapper (`script/prod`), make the wrapper default
 `DEPLOY_TAG` the same way, so `script/prod up -d` is safe too:

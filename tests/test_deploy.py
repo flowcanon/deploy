@@ -153,12 +153,14 @@ def test_second_service_failing_rolls_the_first_back(host, tmp_path):
 
     assert deploy(tag="v2", cmd=COMPOSE_CMD) == 1
 
-    # web had shipped v2; it's rolled back to the exact image it ran.
+    # web had shipped v2; it's rolled back by the release tag it ran.
     assert host.running_images() == before
+    assert host.running() == {"web": ["v1"], "worker": ["v1"]}
     assert host.sha == "prev123abc"
-    rollback = host.index("--scale web=2", "web")
-    assert host.calls[rollback] and host.commands().count("docker compose pull web") == 1
-    assert record(tmp_path)["tag"].startswith("flow-deploy-")
+    scale_ups = [i for i, c in enumerate(host.commands()) if "--scale web=2 web" in c]
+    assert [host.envs[i] for i in scale_ups] == [{"DEPLOY_TAG": "v2"}, {"DEPLOY_TAG": "v1"}]
+    assert host.commands().count("docker compose pull web") == 1
+    assert record(tmp_path)["tag"] == "v1"
 
 
 def test_rollback_failure_exits_3(host, capsys):
@@ -168,14 +170,11 @@ def test_rollback_failure_exits_3(host, capsys):
     assert "web could not be rolled back" in capsys.readouterr().err
 
 
-def test_no_restore_alias_means_no_deploy(host, capsys):
-    """A deploy that already couldn't be reverted exactly never starts."""
-    host.fail("docker tag")
-    assert deploy(tag="v2", cmd=COMPOSE_CMD) == 1
-    assert "could not tag web's running image" in capsys.readouterr().err
-    assert not any("compose pull" in c for c in host.commands())
-    assert host.running() == {"web": ["v1"], "worker": ["v1"]}
-    assert host.sha == "prev123abc"
+def test_no_local_tags_are_created(host):
+    """Restores go by git tags and SHAs: nothing is tagged on the host."""
+    host.unhealthy_services.add(("worker", "v2"))
+    deploy(tag="v2", cmd=COMPOSE_CMD)
+    assert not any(c.startswith("docker tag") for c in host.commands())
 
 
 def test_rollback_after_a_failed_cutover_cleanup_keeps_the_previous_container(host):
@@ -254,7 +253,7 @@ def test_renamed_compose_project_is_refused(host, capsys):
     start a second stack beside it, and snapshot nothing to revert to."""
     host.other_projects = ["oldname"]
     assert deploy(tag="v2", cmd=COMPOSE_CMD) == 1
-    assert "compose project(s) oldname are running" in capsys.readouterr().err
+    assert "compose project(s) oldname run this deploy's services" in capsys.readouterr().err
     assert not any("compose pull" in c for c in host.commands())
     assert host.sha == "prev123abc"
 
@@ -289,33 +288,43 @@ def test_first_deploy_onto_an_empty_host(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_revert_from_latest_restores_the_exact_image_not_what_latest_became(monkeypatch, tmp_path):
+def test_revert_from_latest_restores_by_the_previous_commit(monkeypatch, tmp_path):
+    """:latest isn't a git ref (and moves): the revert uses the SHA that was
+    checked out, which CI pushes every image under."""
     chdir(monkeypatch, tmp_path)
     host = FakeHost(ROLLING, running={"web": ["latest"], "worker": ["latest"]})
     host.install(monkeypatch)
+    host.registry["prev123abc"] = host.images["latest"]  # CI pushed it by SHA too
     before = host.running_images()
-    # Something re-pulls :latest during the deploy: it now names a new build.
-    host.images["latest"] = "sha256:" + "f" * 64
+    host.images["latest"] = "sha256:" + "f" * 64  # something re-pulled :latest
     host.unhealthy_services.add(("worker", "v2"))
 
     assert deploy(tag="v2", cmd=COMPOSE_CMD) == 1
     assert host.running_images() == before
+    assert host.running()["web"] == ["prev123abc"]
 
 
-def test_digest_pinned_container_is_restored_by_alias(monkeypatch, tmp_path):
+def test_digest_pinned_container_is_restored_by_the_previous_commit(monkeypatch, tmp_path):
     chdir(monkeypatch, tmp_path)
     host = FakeHost(ROLLING, running={"worker": ["v1"]}).install(monkeypatch)
     host.add("web", "v1", ref="ghcr.io/myorg/myapp@sha256:abc")
+    host.registry["prev123abc"] = host.images["v1"]
     before = host.running_images()
     host.unhealthy_services.add(("worker", "v2"))
     assert deploy(tag="v2", cmd=COMPOSE_CMD) == 1
     assert host.running_images() == before
 
 
-def test_services_sharing_an_image_share_one_alias(host):
-    deploy(tag="v2", cmd=COMPOSE_CMD)
-    tags = [c for c in host.commands() if c.startswith("docker tag")]
-    assert len(tags) == 1  # web and worker both ran v1
+def test_a_moved_release_tag_restores_by_the_previous_commit(host, capsys):
+    """v1 now names a different image locally than the one running: trust
+    the commit SHA, not the tag."""
+    host.registry["prev123abc"] = host.images["v1"]
+    before = host.running_images()
+    host.images["v1"] = "sha256:" + "e" * 64  # v1 re-pushed and pulled
+    host.unhealthy_services.add(("worker", "v2"))
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == 1
+    assert host.running_images() == before
+    assert "would restore it by the previous commit, prev123abc" in capsys.readouterr().out
 
 
 def test_mixed_images_warn_and_restore_the_most_common(monkeypatch, tmp_path, capsys):
@@ -346,27 +355,57 @@ def test_snapshot_failure_with_failed_git_restore_exits_3(host):
     assert deploy(tag="v2", cmd=COMPOSE_CMD) == 3
 
 
-def test_alias_is_made_in_the_running_containers_repo_too(monkeypatch, tmp_path):
-    """A revert renders the previous commit's compose file: if the release
-    renamed the image repo, the alias must exist under the old name as well."""
+def test_another_project_sharing_the_directory_is_fine(host):
+    """A different project in the same directory (other services) isn't a rename."""
+    host.other_projects = []
+    host.foreign_services = [("obs", "grafana")]
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == 0
+
+
+def test_tag_and_digest_ref_checks_the_tag_not_the_digest(monkeypatch, tmp_path):
+    """repo:v1@sha256:... runs the digest's image even after repo:v1 moved; the
+    revert renders repo:v1, so v1 only counts if it still names that image."""
     chdir(monkeypatch, tmp_path)
     host = FakeHost(stack(web=app()), running={}).install(monkeypatch)
-    host.add("web", "v1", ref="ghcr.io/oldorg/myapp:v1")
+    ctr = host.add("web", "v1", ref="ghcr.io/myorg/myapp:v1@sha256:abc")
+    host.registry["prev123abc"] = ctr.image_id
+    host.images["v1"] = "sha256:" + "e" * 64  # repo:v1 moved
+    host.unhealthy_services.add(("web", "v2"))
     deploy(tag="v2", cmd=COMPOSE_CMD)
-    tagged = sorted(c.split()[-1] for c in host.commands() if c.startswith("docker tag"))
-    alias = tagged[0].split(":")[-1]
-    assert tagged == [f"ghcr.io/myorg/myapp:{alias}", f"ghcr.io/oldorg/myapp:{alias}"]
+    assert "docker image inspect --format {{.Id}} ghcr.io/myorg/myapp:v1" in host.commands()
+    assert host.running_images() == {"web": [ctr.image_id]}
 
 
-def test_container_shown_by_image_id_is_aliased_in_the_config_repo(monkeypatch, tmp_path):
+def test_redeploying_the_running_tag_restores_by_the_previous_commit(host):
+    """v1 was re-pushed and is deployed again: this deploy's pull moves local
+    v1 to the new build, so a revert can't go by v1. It uses the SHA."""
+    old = host.images["v1"]
+    host.registry["prev123abc"] = old
+    host.registry["v1"] = "sha256:" + "d" * 64  # the re-pushed build
+    host.unhealthy_services.add(("worker", "v1"))
+    assert deploy(tag="v1", cmd=COMPOSE_CMD) == 1
+    assert host.running_images() == {"web": [old], "worker": [old]}
+    assert host.running()["web"] == ["prev123abc"]
+
+
+def test_redeploying_the_running_commit_warns_that_a_rebuild_cant_be_undone(host, capsys):
+    """Deploying the SHA that's checked out: no other git name exists for the
+    running build, so a revert can only restore that commit as pulled now."""
+    host.sha = "v1"  # HEAD is the commit the containers run
+    deploy(tag="v1", cmd=COMPOSE_CMD)
+    assert "redeploying v1: if web's image under it was rebuilt" in capsys.readouterr().err
+
+
+def test_container_shown_by_image_id_restores_by_the_previous_commit(monkeypatch, tmp_path):
     """docker ps shows a bare image ID once the container's tag has moved."""
     chdir(monkeypatch, tmp_path)
     host = FakeHost(stack(web=app()), running={}).install(monkeypatch)
     ctr = host.add("web", "v1")
     ctr.ref = ctr.image_id.removeprefix("sha256:")[:12]
-    deploy(tag="v2", cmd=COMPOSE_CMD)
-    tagged = [c.split()[-1] for c in host.commands() if c.startswith("docker tag")]
-    assert len(tagged) == 1 and tagged[0].startswith("ghcr.io/myorg/myapp:flow-deploy-")
+    host.registry["prev123abc"] = ctr.image_id
+    host.unhealthy_services.add(("web", "v2"))
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == 1
+    assert host.running_images() == {"web": [ctr.image_id]}
 
 
 def test_image_that_ignores_deploy_tag_warns(monkeypatch, tmp_path, capsys):

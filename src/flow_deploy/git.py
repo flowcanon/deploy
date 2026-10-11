@@ -24,6 +24,12 @@ def current_sha() -> str:
     return result.stdout.strip()
 
 
+def is_ref(ref: str) -> bool:
+    """True if ``ref`` names a commit in this repo: a tag, a branch, or a SHA."""
+    result = process.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
+    return result.returncode == 0
+
+
 def checkout_detached(sha: str) -> process.Result:
     """Checkout a specific SHA in detached HEAD mode."""
     return process.run(["git", "checkout", "--detach", sha])

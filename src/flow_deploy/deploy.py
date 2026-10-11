@@ -70,7 +70,7 @@ class Previous:
     replicas: int = 0
     image_id: str = ""  # the image its containers ran (the most common, if mixed)
     image_ref: str = ""  # how docker named it: repo:tag, repo@digest, ...
-    restore_tag: str | None = None  # a DEPLOY_TAG that brings image_id back
+    restore_tag: str | None = None  # the git tag or SHA that brings image_id back
 
 
 @dataclass
@@ -236,12 +236,12 @@ def _deploy_locked(
 
     # A release that renames the compose project would start a second stack
     # beside the running one, and snapshot (so revert) nothing.
-    others = containers.other_projects_here(project)
+    others = containers.other_projects_here(project, [s.name for s in app_services])
     if others is None:
         log.error("could not list this directory's containers; nothing was changed")
     elif others:
         log.error(
-            f"containers from compose project(s) {', '.join(sorted(others))} are running "
+            f"compose project(s) {', '.join(sorted(others))} run this deploy's services "
             f"in this directory, but this commit's project is {project or '(unnamed)'}; "
             "a project rename can't be deployed in place. Nothing was changed."
         )
@@ -250,7 +250,7 @@ def _deploy_locked(
 
     # Before changing anything, record what each service is running, so any
     # failure can put back exactly that image.
-    if not _snapshot(run, app_services):
+    if not _snapshot(run, app_services, tag):
         return EXIT_FAILED if git.restore(run.previous_sha) else _degraded("git restore failed")
 
     # app_services is in deploy.order. Services start in that order and stop
@@ -335,13 +335,12 @@ def _warn_untagged_images(services: list[config.ServiceConfig], tag: str) -> Non
             )
 
 
-def _snapshot(run: _Run, services: list[config.ServiceConfig]) -> bool:
+def _snapshot(run: _Run, services: list[config.ServiceConfig], tag: str) -> bool:
     """Record what each service is running on ``run.previous``. False if Docker can't say.
 
-    Each running image gets a restore tag that names exactly it (see
-    _restore_tag); services sharing an image share one.
+    Each service gets the DEPLOY_TAG that brings its running image back: see
+    _restore_tag.
     """
-    aliases: dict[tuple[tuple[str, ...], str], str | None] = {}
     for svc in services:
         ctrs = containers.list_containers_for_service(
             svc.name, project=run.project, statuses=("running", "restarting")
@@ -360,40 +359,46 @@ def _snapshot(run: _Run, services: list[config.ServiceConfig]) -> bool:
                     f"{svc.name} is running {len(counts)} different images; a revert "
                     f"restores the most common, {prev.image_ref}"
                 )
-            # A revert renders the previous commit's compose file, whose image
-            # repo the running container's name records. The new config's repo
-            # covers a container whose tag has moved (docker ps shows an ID).
-            repos = {containers.image_repo(svc.image or "")}
-            if containers.image_tag(prev.image_ref) is not None or "@" in prev.image_ref:
-                repos.add(containers.image_repo(prev.image_ref))
-            key = (tuple(sorted(repos)), prev.image_id)
-            if key not in aliases:
-                aliases[key] = _restore_tag(*key)
-            prev.restore_tag = aliases[key]
-            if prev.restore_tag is None:
-                # Never start a deploy that already can't be reverted exactly.
-                log.error(
-                    f"could not tag {svc.name}'s running image ({prev.image_ref}) "
-                    "for a revert; nothing was changed"
-                )
-                return False
+            prev.restore_tag = _restore_tag(prev, run.previous_sha, tag)
         run.previous[svc.name] = prev
     return True
 
 
-def _restore_tag(repos: tuple[str, ...], image_id: str) -> str | None:
-    """A DEPLOY_TAG that names exactly ``image_id``: a local alias of it.
+def _restore_tag(prev: Previous, previous_sha: str | None, deploy_tag: str) -> str | None:
+    """The DEPLOY_TAG a revert brings ``prev.svc`` back with: a git tag or commit SHA.
 
-    ``repo:flow-deploy-<image id>`` in each of ``repos``, created now, before
-    anything changes. A revert then restores the image that was running, never
-    whatever ``:latest`` or a re-pushed tag has since come to mean, and it
-    works the same whether the container ran a version tag, a sha, ``:latest``,
-    a digest, or nothing nameable at all.
+    The tag the containers were started from, when it's a ref in this repo (a
+    release tag or a SHA) and still names the image they run. Not when it's
+    the tag being deployed: this deploy pulls that, which moves it if it was
+    re-pushed. Otherwise (``:latest``, a tag re-pushed since, a digest, no
+    tag, a redeploy of the same tag) the commit that was checked out before
+    the deploy, whose SHA CI pushes every image under.
     """
-    alias = "flow-deploy-" + image_id.removeprefix("sha256:")
-    if all(repos) and all(containers.tag_image(image_id, f"{r}:{alias}") for r in repos):
-        return alias
-    return None
+    tag = containers.image_tag(prev.image_ref)
+    # Check repo:tag itself, which is what a revert renders: a ref like
+    # repo:v1@sha256:... names the digest, whatever repo:v1 says now.
+    named = f"{containers.image_repo(prev.image_ref)}:{tag}"
+    if (
+        tag
+        and tag != deploy_tag
+        and git.is_ref(tag)
+        and containers.local_image_id(named) == prev.image_id
+    ):
+        return tag
+    if previous_sha == deploy_tag:
+        # Redeploying the commit that's running: git has no other name for the
+        # build running now, so a revert restores this commit as pulled now.
+        # (master didn't roll shipped services back at all.)
+        log.warning(
+            f"redeploying {deploy_tag}: if {prev.svc.name}'s image under it was rebuilt, "
+            "a revert restores the rebuild, not the build running now"
+        )
+    elif previous_sha:
+        log.info(
+            f"note: {prev.svc.name} runs {prev.image_ref or prev.image_id[:19]}; a revert "
+            f"would restore it by the previous commit, {previous_sha[:12]}"
+        )
+    return previous_sha
 
 
 def _degraded(problem: str) -> int:
@@ -704,8 +709,8 @@ def _deploy_service(
 ) -> int:
     """Deploy a single service with a rolling cutover.
 
-    ``pull=False`` for a rollback to an image that's already local (and may
-    be a local alias the registry doesn't have). Returns SVC_OK, SVC_FAILED
+    ``pull=False`` for a rollback: the previous image is normally still
+    local, and compose pulls it if not. Returns SVC_OK, SVC_FAILED
     (old container still serving, nothing left behind), or SVC_DIRTY
     (failed, and cleaning up after itself failed too).
     """

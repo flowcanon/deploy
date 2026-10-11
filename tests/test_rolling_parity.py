@@ -31,13 +31,13 @@ DELIBERATE_OUTCOMES = {
 
 
 def is_snapshot(args):
-    """The pre-deploy checks: what each app service runs, aliased by image ID,
-    and that no other compose project runs in this directory. Plus a revert's
-    look for stopped leftovers that compose would otherwise restart.
+    """The pre-deploy checks: what each app service runs and the git tag or
+    SHA that restores it, and that no other compose project runs these
+    services in this directory. Plus a revert's look for stopped leftovers
+    that compose would otherwise restart.
 
     New on this branch, issued before anything changes, so a failure can
-    restore the exact image each service ran whatever tag it was started
-    from (a version, a sha, a moved :latest, or none).
+    restore what each service ran rather than what HEAD or :latest says.
     """
     line = " ".join(args)
     return (
@@ -45,7 +45,8 @@ def is_snapshot(args):
         or (args[:2] == ["docker", "ps"] and "project.working_dir=" in line)
         or (args[:2] == ["docker", "ps"] and "status=created" in line)
         or args[:4] == ["docker", "inspect", "--format", "{{.Id}} {{.Image}}"]
-        or args[:2] == ["docker", "tag"]
+        or args[:3] == ["docker", "image", "inspect"]
+        or args[:3] == ["git", "rev-parse", "--verify"]
     )
 
 
@@ -117,7 +118,7 @@ def test_rolling_deploy_matches_master(name, monkeypatch, tmp_path):
         rollback = calls[len(expected_calls) :]
         calls = calls[: len(expected_calls)]
         composes = [env for args, env in rollback if args[:2] == ["docker", "compose"]]
-        assert composes and all(env["DEPLOY_TAG"].startswith("flow-deploy-") for env in composes)
+        assert composes and all(env["DEPLOY_TAG"] == "v1" for env in composes)
         assert any(args[-1] == "web" and "--scale" in args for args, _ in rollback)
     assert by_appearance(calls) == by_appearance(expected_calls), f"{name}: commands differ"
 

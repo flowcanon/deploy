@@ -102,12 +102,12 @@ def test_phase_3_failure_reverts_everything(host, tmp_path):
 
     assert host.running_images() == before
     assert host.sha == "prev123abc"
-    assert record(tmp_path)["tag"].startswith("flow-deploy-")
+    assert record(tmp_path)["tag"] == "v1"
     # Undo order: web rolled back before the drain-first services come back.
     aliased = [
         i
         for i, env in enumerate(host.envs)
-        if (env or {}).get("DEPLOY_TAG", "").startswith("flow-deploy-")
+        if (env or {}).get("DEPLOY_TAG") == "v1" and host.calls[i][2] == "up"
     ]
     rollback = next(i for i in aliased if "web=2" in host.calls[i])
     restore = next(i for i in aliased if "scheduler=1" in host.calls[i])
@@ -170,12 +170,16 @@ def test_restore_cannot_inspect_exits_3(host):
     assert deploy(tag="v2", cmd=COMPOSE_CMD) == 3
 
 
-def test_no_restore_alias_means_nothing_is_drained(host, capsys):
-    host.fail("docker tag")
+def test_restore_from_latest_uses_the_previous_commit(monkeypatch, tmp_path):
+    chdir(monkeypatch, tmp_path)
+    host = FakeHost(DRAIN, running={"web": ["latest"], "worker": ["latest"]})
+    host.install(monkeypatch)
+    host.registry["prev123abc"] = host.images["latest"]
+    before = host.running_images()
+    host.unhealthy_services.add(("web", "v2"))
     assert deploy(tag="v2", cmd=COMPOSE_CMD) == 1
-    assert "for a revert; nothing was changed" in capsys.readouterr().err
-    assert not any(c.startswith("docker stop") for c in host.commands())
-    assert host.running() == V1
+    assert host.running_images() == before
+    assert host.running()["worker"] == ["prev123abc"]
 
 
 def test_new_containers_that_cannot_be_drained_on_revert_exit_3(host):

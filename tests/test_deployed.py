@@ -84,20 +84,17 @@ def test_current_refuses_mixed_tags(host):
     assert "different or untagged images" in why and "v2 (web)" in why and "v1 (worker)" in why
 
 
-def test_current_after_a_revert_names_the_one_image_by_its_alias(host):
-    """A revert recreates shipped services on the alias, while the failed one
-    keeps its old container and tag: the same image under two names."""
-    host.add("web", "flow-deploy-abc")
-    worker = host.add("worker", "v2")
-    host.ctrs[0].image_id = worker.image_id
-    assert deployed.current() == (
-        "flow-deploy-abc",
-        "running containers (one image under several tags)",
-    )
+def test_current_after_a_revert_from_latest_names_the_sha(host):
+    """A revert from :latest recreates services on the previous commit's SHA,
+    while a kept container still says :latest: one image, the SHA names it."""
+    web = host.add("web", "abc123sha")
+    worker = host.add("worker", "latest")
+    web.image_id = worker.image_id
+    assert deployed.current() == ("abc123sha", "running containers (one image)")
 
 
-def test_current_refuses_different_tags_without_an_alias(host):
-    """Same image, but no alias among the tags: no exact name to pick."""
+def test_current_refuses_two_real_tags_for_one_image(host):
+    """Two release tags on one image: no single answer, so no guess."""
     web = host.add("web", "v2")
     worker = host.add("worker", "v2-again")
     worker.image_id = web.image_id
@@ -106,8 +103,8 @@ def test_current_refuses_different_tags_without_an_alias(host):
 
 
 def test_current_raises_when_docker_inspect_fails(host):
-    host.add("web", "flow-deploy-abc")
-    host.add("worker", "v2")
+    host.add("web", "abc123sha")
+    host.add("worker", "latest")
     host.fail("docker inspect")
     with pytest.raises(RuntimeError, match="could not inspect the app containers"):
         deployed.current()

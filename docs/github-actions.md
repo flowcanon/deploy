@@ -14,7 +14,7 @@ The deploy pipeline:
 
 The deploy tag is both the git ref checked out on the server and the image tag pulled, so:
 
-- **Push the image under every tag you deploy by.** Typically the version tag (`v1.4.0`) for releases and the full commit SHA for everything else. `:latest` is optional; flow-deploy never relies on it.
+- **Push the image under every tag you deploy by, and always under the full commit SHA.** Typically the version tag (`v1.4.0`) for releases plus `${{ github.sha }}`. A failed deploy restores by the tag that was running when it's a git ref, else by the SHA of the commit that was checked out. `:latest` is optional; flow-deploy never relies on it.
 - **Name every app image with `DEPLOY_TAG`**, directly or through `.env`:
 
 ```yaml
@@ -33,7 +33,7 @@ A bare `DOCKER_IMAGE=ghcr.io/yourorg/yourproject` (no tag) always runs `:latest`
 
 - **Use `flow-deploy compose` for manual commands on the server** (`flow-deploy compose up -d`, `flow-deploy compose run --rm web ...`). With `${DEPLOY_TAG:-latest}`, a plain `docker compose up -d` would move every service to `:latest`; `flow-deploy compose` sets `DEPLOY_TAG` to the deployed tag. Or have `script/prod` default it (see the README's Image Tags section).
 
-Version tags can be lightweight or annotated, and a re-pushed tag is picked up: flow-deploy runs `git fetch --tags --force`. If a deploy fails, every service goes back to the exact image it was running, whatever it was tagged.
+Version tags can be lightweight or annotated, and a re-pushed tag is picked up: flow-deploy runs `git fetch --tags --force`. If a deploy fails, every service goes back to the image it was running, named by its release tag or commit SHA.
 
 ## Prerequisites
 
@@ -291,7 +291,7 @@ The rendered image doesn't end in `:<tag>`, so the deploy doesn't change what th
 CI didn't push the image under that tag. Push the version tag as well as the SHA, or deploy by SHA.
 
 **`can't tell which tag is deployed`** from `flow-deploy tag` or `flow-deploy compose`:
-Services run different or untagged images, or nothing is running and no deploy is recorded. Set it explicitly: `DEPLOY_TAG=v1.4.0 flow-deploy compose up -d`.
+Services run different or untagged images (one image under `:latest` plus one other tag is fine), or nothing is running and no deploy is recorded. Set it explicitly: `DEPLOY_TAG=v1.4.0 flow-deploy compose up -d`.
 
 **Health check timeout:**
 Increase the timeout via label: `deploy.healthcheck.timeout: 300`. Check that your app's health endpoint responds within the Docker healthcheck interval.
