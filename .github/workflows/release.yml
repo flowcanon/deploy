@@ -65,7 +65,13 @@ jobs:
             dist/flow-deploy-linux-glibc
 
   build_and_deploy:
-    if: inputs.force_deploy || needs.release.outputs.created-tag
+    # build_release is skipped on a force_deploy run that cut no release; a
+    # plain `if:` implies success(), which would skip this job with it.
+    if: >-
+      !cancelled()
+      && needs.release.result == 'success'
+      && (needs.build_release.result == 'success' || needs.build_release.result == 'skipped')
+      && (inputs.force_deploy || needs.release.outputs.created-tag)
     name: Build & Deploy
     runs-on: ubuntu-latest
     needs: [release, build_release]
@@ -83,12 +89,30 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Deploy by the release's version tag (the git tag build_release made,
+      # v<version>), or by the commit SHA on a force_deploy run with no release.
+      - id: deploy_tag
+        name: Choose the deploy tag
+        env:
+          CREATED_TAG: ${{ needs.release.outputs.created-tag }}
+          VERSION_TAG: v${{ needs.release.outputs.current-version }}
+        run: |
+          if [ -n "$CREATED_TAG" ]; then
+            echo "tag=$VERSION_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The image is pushed under every name a deploy or a revert may use:
+      # the version tag (releases only), and the short and full SHA.
       - id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE }}
           tags: |
+            type=raw,value=v${{ needs.release.outputs.current-version }},enable=${{ needs.release.outputs.created-tag != '' }}
             type=sha,prefix=
+            type=sha,format=long,prefix=
 
       - uses: docker/build-push-action@v6
         with:
@@ -98,7 +122,7 @@ jobs:
 
       - uses: flowcanon/deploy-action@master
         with:
-          tag: ${{ steps.meta.outputs.version }}
+          tag: ${{ steps.deploy_tag.outputs.tag }}
           ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
           host: ${{ vars.HOST_NAME }}
           user: ${{ vars.HOST_USER }}

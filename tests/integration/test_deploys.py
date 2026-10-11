@@ -266,12 +266,14 @@ def test_sha_deploy(stack):
     assert stack.flow("tag").stdout == f"{sha}\n"
 
 
-def test_failed_deploy_restores_the_version_that_was_running(stack):
+@pytest.mark.parametrize("annotated", [False, True], ids=["lightweight", "annotated"])
+def test_failed_deploy_restores_the_version_that_was_running(stack, annotated):
     """v1 -> v2 succeeds; v3 then fails in phase 3 and everything returns to
-    v2 (not v1, not :latest), shipped web included."""
-    stack.commit("v1", standard())
-    stack.commit("v2", standard())
-    stack.commit("v3", standard(worker=BAD_WORKER))
+    v2 (not v1, not :latest), shipped web included. Release workflows make
+    annotated tags, so both kinds restore by the version tag."""
+    stack.commit("v1", standard(), annotated=annotated)
+    stack.commit("v2", standard(), annotated=annotated)
+    stack.commit("v3", standard(worker=BAD_WORKER), annotated=annotated)
     stack.up("v1")
     assert stack.deploy("v2").returncode == 0
 
