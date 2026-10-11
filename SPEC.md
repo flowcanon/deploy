@@ -10,7 +10,7 @@ A minimal, opinionated deployment tool for Docker Compose + Traefik stacks. Repl
 - **Two layers, clean split.** A server-side CLI (`flow-deploy`) handles the single-node deploy lifecycle — pull, scale, health check, cutover. A GitHub Action (`flow-deploy-action`) handles host discovery, fleet orchestration, and SSH fan-out. Single-host projects can skip the action entirely.
 - **Accessories are left alone.** Databases, caches, and other stateful services are never restarted during a deploy unless explicitly requested.
 - **Builds happen in CI.** The tool does not build images. GitHub Actions builds and pushes to GHCR. The tool pulls and swaps.
-- **Failure is a no-op.** If a new container fails its health check, the old container continues serving traffic untouched. Any failure puts every app service back on the exact image it ran before the deploy, and the deploy exits nonzero.
+- **Failure is a no-op.** If a new container fails its health check, the old container continues serving traffic untouched. Any failure puts every app service back on the image it ran before the deploy and exits 1, or exits 3 naming what it couldn't put back.
 - **Logging is the interface.** All output is structured, human-readable, and designed to flow through an SSH session back into GitHub Actions logs.
 
 ---
@@ -267,7 +267,7 @@ services:
 
 CI must push the image under every tag it may deploy by: the version, and always the full commit SHA, which a revert falls back to. The deploy renders its compose config with `DEPLOY_TAG` set and warns when an app image doesn't end in `:<tag>`; such a service keeps whatever image the compose file names.
 
-**What's running.** Restores are named by git: a release tag or a commit SHA. The pre-deploy snapshot (§2.2, 0g) records each service's running image ID and the tag it was started from. A revert uses that tag when it is a git ref, still names the running image locally, and isn't the tag being deployed (the deploy pulls that, which would move a re-pushed tag). Otherwise (started from `:latest`, from a tag re-pushed since, from a digest, untagged, or a redeploy of the same tag) it uses the full SHA of the commit checked out before the deploy, so CI must push every image under its full commit SHA. If that image isn't in the registry the restore fails and the deploy exits 3. Redeploying the commit that's already checked out leaves no other git name for the running build: if its image was rebuilt under the same tag, a revert restores the rebuild, and the deploy warns up front. flow-deploy creates no tags and writes nothing in the working tree.
+**What's running.** Restores are named by git: a release tag or a commit SHA. The pre-deploy snapshot (§2.2, 0g) records each service's running image ID and the tag it was started from. A revert uses that tag when it is a git ref, still names the running image locally, and isn't the tag being deployed (the deploy pulls that, which would move a re-pushed tag). Otherwise (started from `:latest`, from a tag re-pushed since, from a digest, untagged, or a redeploy of the same tag) it uses the full SHA of the commit checked out before the deploy, so CI must push every image under its full commit SHA. If that image isn't in the registry, the restore fails and the deploy exits 3 (for a service with `build:`, compose builds it from the restored checkout instead). Redeploying the commit that's already checked out leaves no other git name for the running build: if its image was rebuilt under the same tag, a revert restores the rebuild, and the deploy warns up front. flow-deploy creates no tags and writes nothing in the working tree.
 
 **What's deployed.** `flow-deploy tag` (§4.7) answers "which tag is deployed here": the tag of the running app containers when they all agree; if they run one image under `:latest` and one other tag (after a revert from `:latest`), that other tag; otherwise, when nothing is running, `.git/deploy-tag`. Anything else mixed, or untagged, is an error, never a guess. The record is written after every successful deploy of all app services, rewritten to the restore tag after a revert, and cleared by a `--service` deploy that leaves some app services out (they're then on different tags).
 
@@ -330,14 +330,14 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml "$@"
 
 It fails closed: when `flow-deploy tag` can't tell, the wrapper stops rather than run compose on `:latest`. `flow-deploy` always sets `DEPLOY_TAG` when it calls the wrapper (to a placeholder while looking up the tag, and in `flow-deploy config`), so the default never asks it and never recurses. On a host with nothing running, pass `DEPLOY_TAG` explicitly.
 
-**The wrapper contract.** flow-deploy runs `config`, `pull`, `up`, and `up --dry-run` (the accessory check, §3.2) through the wrapper, and `exec`, `logs` and `flow-deploy compose` pass through it too. A wrapper may set up the environment (sourcing `.env`, defaulting `DEPLOY_TAG` as below), as long as it:
+**The wrapper contract.** flow-deploy runs `config`, `pull` and `up` through the wrapper, and `exec`, `logs` and `flow-deploy compose` pass through it too. A wrapper may set up the environment (sourcing `.env`, defaulting `DEPLOY_TAG` as below), as long as it:
 
 - passes its arguments to compose unchanged
 - prints nothing extra on stdout (`config`'s output is parsed)
 - exits with compose's exit status
 - never prompts, and never changes the project or any files
 
-flow-deploy passes `DEPLOY_TAG` on every compose call it makes: the deploy tag, the deployed tag, or a lookup placeholder when it doesn't matter or isn't known (`config`, `status`, `exec`, `logs`). So a wrapper's own `DEPLOY_TAG` lookup never runs from inside flow-deploy. That matters for a fail-closed wrapper: a call without `DEPLOY_TAG` would exit 1, and a check built on it, like the accessory drift warning, would quietly give no answer.
+flow-deploy passes `DEPLOY_TAG` on every compose call it makes: the deploy tag, the deployed tag, or a lookup placeholder when it doesn't matter or isn't known (`config`, `status`, `exec`, `logs`). So a wrapper's own `DEPLOY_TAG` lookup never runs from inside flow-deploy. That matters for a fail-closed wrapper: a call without `DEPLOY_TAG` would exit 1, failing whatever flow-deploy was doing.
 
 This pattern means the tool is completely agnostic about which compose files exist or how they're layered. The project defines its own composition strategy, and the tool just calls the wrapper with the appropriate subcommand arguments (`pull`, `up`, `stop`, etc.).
 
@@ -351,7 +351,7 @@ Secrets are managed via `.env` files, which Docker Compose reads natively. The t
 
 The `.env` file should be excluded from version control and provisioned separately (via Ansible, manual setup, or a secrets manager). The tool only requires that the file exists if the compose file references it.
 
-**Accessories and `.env`.** Compose recreates every service that reads an `env_file` when the file changes. The tool never touches accessories, so that recreate happens on the next manual `up -d`. Keep accessories off the app's `.env`: drop `env_file` and list the variables they need under `environment:` (interpolated from `.env`). Scope manual changes: `flow-deploy compose up -d --no-deps <service>`. Each deploy, and `flow-deploy status`, warns when compose would recreate an accessory's running container: `<compose-command> up -d --dry-run --no-deps <svc>` reports `Recreate` (run with `COMPOSE_PROGRESS=plain`; it changes nothing). That's compose's own decision, so it matches what the next `up -d` will do, `env_file` services included (`config --hash` hashes those differently from `up`). Warn only.
+**Accessories and `.env`.** Compose recreates every service that reads an `env_file` when the file changes. The tool never touches accessories, so that recreate happens on the next manual `up -d`. Keep accessories off the app's `.env`: drop `env_file` and list the variables they need under `environment:` (interpolated from `.env`). Scope manual changes: `flow-deploy compose up -d --no-deps <service>`.
 
 ---
 
@@ -391,7 +391,7 @@ Show the current state of all managed services.
 flow-deploy status
 ```
 
-Output includes: current HEAD SHA, the deployed tag and where it came from (§2.8), the last deploy from `.git/flow-deploy.log` and how it ended (or that it never recorded an exit: still running, or killed), accessories whose config changed since they started (§3.2), and per container: service name, role, container ID, image, health status.
+Output includes: current HEAD SHA, the deployed tag and where it came from (§2.8), the last deploy from `.git/flow-deploy.log` and how it ended (or that it never recorded an exit: still running, or killed), and per container: service name, role, container ID, image, health status.
 
 ### 4.3 `flow-deploy exec`
 

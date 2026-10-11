@@ -299,9 +299,6 @@ CI has no `.env`, so variables only set there are empty. Discovery retries witho
 **`didn't exit on SIGTERM ... and was killed`:**
 The container's PID 1 isn't handling SIGTERM, so every deploy waits out the drain and kills it mid-request. Use an exec-form `CMD` (`["gunicorn", ...]`), or `exec` the server at the end of the entrypoint script.
 
-**`accessory postgres's config changed since it started`:**
-The next manual `up -d` will recreate it. Usually an `.env` edit: keep accessories off `env_file` and list their variables under `environment:` (see the README's "Accessories and `.env`").
-
 **How did a deploy end, when CI was cancelled?**
 On the host: `flow-deploy status` (last run and exit code), or `.git/flow-deploy.log`.
 

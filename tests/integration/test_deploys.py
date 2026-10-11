@@ -420,7 +420,7 @@ def test_another_project_with_other_services_in_the_directory_is_fine(stack):
 
 
 # ---------------------------------------------------------------------------
-# What an operator sees: kills, accessory drift, the run log, restore health,
+# What an operator sees: kills, the run log, restore health,
 # and discovery without the app's env
 # ---------------------------------------------------------------------------
 
@@ -456,21 +456,6 @@ def test_a_clean_deploy_warns_about_nothing(stack):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "WARNING" not in result.stderr, result.stderr
-
-
-def test_accessory_config_drift_is_reported_and_left_alone(stack):
-    stack.commit("v1", standard(cache=accessory("a")))
-    stack.commit("v2", standard(cache=accessory("b")))
-    stack.up("v1")
-    cache = stack.container_ids("cache")
-
-    result = stack.deploy("v2")
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "accessory cache's config changed since it started" in result.stderr
-    assert stack.container_ids("cache") == cache, "flow-deploy recreated an accessory"
-    status = stack.flow("status").stdout
-    assert "Accessory cache: config changed since it started" in status
 
 
 def test_every_deploy_leaves_a_host_side_log(stack):
@@ -529,39 +514,6 @@ def test_discovery_works_without_the_apps_env(stack):
     assert "(unset: APP_IMAGE_NOT_SET_IN_CI)" in result.stderr
 
 
-def test_env_file_accessory_drift_matches_composes_own_decision(stack):
-    """An accessory reading an env_file: no warning when compose wouldn't
-    recreate it (config --hash disagreed with up here), a warning once an
-    env edit means it would."""
-    (stack.repo / ".gitignore").write_text("accessory.env\n")  # like a real .env
-    stack.git("add", ".gitignore")
-    stack.git("commit", "-q", "-m", "ignore the env file")
-    db = {"image": "${REGISTRY}/stub:v1", "env_file": "./accessory.env", "labels": ACCESSORY_LABELS}
-    stack.commit("v1", standard(db=db))
-    stack.commit("v2", standard(db=db))
-    stack.commit("v3", standard(db=db))
-    (stack.repo / "accessory.env").write_text("SETTING=a\n")
-    stack.up("v1")
-    db_ids = stack.container_ids("db")
-
-    unchanged = stack.deploy("v2")
-
-    assert unchanged.returncode == 0, unchanged.stdout + unchanged.stderr
-    assert "accessory" not in unchanged.stderr, unchanged.stderr
-    assert "Accessory db" not in stack.flow("status").stdout
-
-    (stack.repo / "accessory.env").write_text("SETTING=b\n")
-    edited = stack.deploy("v3")
-
-    assert edited.returncode == 0, edited.stdout + edited.stderr
-    assert "accessory db's config changed since it started" in edited.stderr
-    assert "Accessory db: config changed" in stack.flow("status").stdout
-    assert stack.container_ids("db") == db_ids, "flow-deploy recreated an accessory"
-
-
-# Stricter than the documented fail-closed snippet: it refuses outright when
-# DEPLOY_TAG is unset, so a lookup that happens to succeed can't hide a call
-# flow-deploy made without it.
 STRICT_WRAPPER = """#!/bin/sh
 if [ -z "${DEPLOY_TAG:-}" ]; then
   echo "script/prod: set DEPLOY_TAG" >&2
@@ -572,7 +524,7 @@ exec docker compose "$@"
 
 
 def test_flow_deploy_never_leaves_the_wrapper_to_find_deploy_tag(stack):
-    """deploy, status (drift included), config, exec and logs all pass DEPLOY_TAG
+    """deploy, status, config, exec and logs all pass DEPLOY_TAG
     through the project's compose wrapper, so a fail-closed wrapper never
     exits underneath them and silently empties an answer."""
     wrapper = stack.repo / "script" / "prod"
@@ -590,10 +542,9 @@ def test_flow_deploy_never_leaves_the_wrapper_to_find_deploy_tag(stack):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "script/prod: set DEPLOY_TAG" not in result.stderr
-    assert "accessory cache's config changed since it started" in result.stderr
     status = stack.flow("status")
     assert status.returncode == 0, status.stderr
-    assert "Accessory cache: config changed since it started" in status.stdout
+    assert "Deployed tag: v2 (from running containers)" in status.stdout
     config = stack.flow("config")
     assert config.returncode == 0, config.stderr
     assert json.loads(config.stdout)[0]["host"] == "app-1.example.com"

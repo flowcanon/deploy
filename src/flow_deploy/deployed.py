@@ -66,9 +66,11 @@ def current(compose_cmd: list[str] | None = None) -> tuple[str | None, str]:
     if len(tags) == 1 and None not in tags:
         return next(iter(tags)), "running containers"
     if len(tags) > 1 and None not in tags and len(tags.keys() - {"latest"}) == 1:
-        # After a revert from :latest, a recreated service runs the previous
-        # commit's SHA while a kept container still says :latest. If they run
-        # one image, the SHA names it.
+        # After a failed deploy from :latest, recreated services run the
+        # previous commit's SHA while the failed service's kept container still
+        # says :latest. If they run one image, the SHA names it. Refusing here
+        # would make a fail-closed wrapper refuse every compose call until the
+        # next deploy.
         images = containers.image_ids(ids)
         if images is None:
             raise RuntimeError("could not inspect the app containers (docker inspect failed)")

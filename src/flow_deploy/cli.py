@@ -50,12 +50,6 @@ def status():
         header, code = last
         ended = f"exit {code}" if code is not None else "no exit recorded (running, or killed)"
         log.info(f"Last deploy: {header}: {ended} (log: {log.RUN_LOG})")
-    project = compose_dict.get("name", "")
-    # The deployed tag, or the placeholder when it's unknown: never empty, or a
-    # fail-closed wrapper would exit and the check would quietly say nothing.
-    drift_env = {"DEPLOY_TAG": tag or deployed.LOOKUP_PLACEHOLDER}
-    for name in deploy_mod.accessory_drift(compose_dict, None, project, drift_env):
-        log.info(f"Accessory {name}: config changed since it started; next `up -d` recreates it")
     log.info("")
 
     for svc in all_services:

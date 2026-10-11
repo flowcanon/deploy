@@ -173,7 +173,7 @@ One case has no git name for the previous build: redeploying the commit that's
 already running. If its image was rebuilt and re-pushed under the same tag, a
 revert restores that commit as pulled now; the deploy warns when it sees this.
 (Before this release, shipped services weren't rolled back at all.)
-Nothing is tagged or written on the host. If another compose project runs this
+Nothing is tagged on the host, and nothing is written outside `.git`. If another compose project runs this
 deploy's services in the same directory (a release that renamed the project
 would start a second stack beside the first), the deploy stops before
 changing anything.
@@ -318,10 +318,7 @@ clears the record and warns.
 
 flow-deploy never touches accessories (`deploy.role=accessory`): no pulls, no
 restarts. A change to one lands on the next manual `up -d`, which recreates
-it. So a deploy and `flow-deploy status` warn when an accessory's compose
-config changed so that compose would recreate it (compose's own decision, from
-`up --dry-run`): plan that
-recreate (data, downtime) instead of discovering it.
+it, so plan such changes (data, downtime).
 
 The common cause is `.env`: compose recreates every service that reads an
 `env_file` when the file changes, postgres and redis included. Keep

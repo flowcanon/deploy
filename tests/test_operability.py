@@ -1,5 +1,5 @@
-"""What a host operator sees: SIGKILL warnings, accessory drift, the run log,
-the deploy record, health after a restore, and discovery without app env."""
+"""What a host operator sees: SIGKILL warnings, the run log, the deploy
+record, health after a restore, and discovery without app env."""
 
 import json
 from unittest.mock import patch
@@ -63,48 +63,15 @@ def test_a_clean_stop_warns_about_nothing(host, capsys):
     assert "SIGTERM" not in capsys.readouterr().err
 
 
-# ---------------------------------------------------------------------------
-# 3. Accessory config drift is reported, never acted on
-# ---------------------------------------------------------------------------
-
-
-def test_accessory_config_drift_warns_and_leaves_it_alone(host, capsys):
-    db = next(c for c in host.ctrs if c.service == "postgres")
-    host.hashes["postgres"] = "hash-after-env-change"
-    assert deploy(tag="v2", cmd=COMPOSE_CMD) == 0
-    assert "accessory postgres's config changed since it started" in capsys.readouterr().err
-    assert db in host.ctrs and db.state == "running"
-    # Only compose's dry run ever names it: nothing real is done to it.
-    ups = [c for c in host.commands() if "postgres" in c and " up " in c]
-    assert ups and all("--dry-run" in c for c in ups)
-
-
-def test_unchanged_accessory_warns_about_nothing(host, capsys):
-    assert deploy(tag="v2", cmd=COMPOSE_CMD) == 0
-    assert "accessory" not in capsys.readouterr().err
-
-
-def test_drift_check_failures_are_ignored(host, capsys):
-    host.fail("--dry-run")
-    assert deploy(tag="v2", cmd=COMPOSE_CMD) == 0
-    assert "accessory" not in capsys.readouterr().err
-
-
-def test_status_shows_accessory_drift(host):
-    host.hashes["postgres"] = "changed"
-    result = CliRunner().invoke(main, ["status"])
-    assert "Accessory postgres: config changed since it started" in result.stdout
-
-
-def test_status_drift_check_passes_deploy_tag_when_the_tag_is_unknown(host):
-    """Services on different tags: the deployed tag is unknown. The drift
-    check still passes DEPLOY_TAG, so a fail-closed wrapper answers."""
+def test_status_works_through_a_fail_closed_wrapper_when_the_tag_is_unknown(host):
+    """Services on different tags: the deployed tag is unknown. status still
+    passes DEPLOY_TAG on its compose calls, so a fail-closed wrapper answers."""
     host.ctrs = [c for c in host.ctrs if c.service != "worker"]
     host.add("worker", "v2")
-    host.hashes["postgres"] = "changed"
-    out = CliRunner().invoke(main, ["status"]).stdout
-    assert "Deployed tag: unknown" in out
-    assert "Accessory postgres: config changed since it started" in out
+    result = CliRunner().invoke(main, ["status"])
+    assert result.exit_code == 0
+    assert "Deployed tag: unknown" in result.stdout
+    assert "postgres (accessory)" in result.stdout
 
 
 @pytest.mark.parametrize("args", [["exec", "web", "ls"], ["logs", "web"]])
@@ -133,6 +100,38 @@ def test_the_fake_wrapper_refuses_an_untagged_compose_call(host):
 def test_record_holds_the_deployed_commit(host, tmp_path):
     assert deploy(tag="v2", cmd=COMPOSE_CMD) == 0
     assert record(tmp_path)["sha"] == host.sha == "v2"
+
+
+def test_a_failed_first_deploy_from_latest_reverts_by_sha_and_tag_still_answers(
+    monkeypatch, tmp_path
+):
+    """A host whose services all run :latest (as before its first tagged deploy),
+    and the deploy fails. The revert restores by the previous commit's SHA; the
+    failed rolling service keeps its :latest container, so the host runs one
+    image under two tags. `flow-deploy tag` must still answer (the SHA), or a
+    fail-closed wrapper would refuse every manual and scripted compose call
+    until the next deploy."""
+    from flow_deploy import deployed
+
+    chdir(monkeypatch, tmp_path)
+    running = {"web": ["latest"], "scheduler": ["latest"], "worker": ["latest"]}
+    host = FakeHost(DRAIN, running=running).install(monkeypatch)
+    monkeypatch.setattr(compose, "resolve_command", lambda: list(COMPOSE_CMD))
+    host.registry["prev123abc"] = host.images["latest"]  # CI pushed that build by SHA too
+    before = host.running_images()
+    host.unhealthy_services.add(("web", "v2"))
+
+    assert deploy(tag="v2", cmd=COMPOSE_CMD) == 1
+
+    assert host.running_images() == before
+    assert host.running() == {
+        "web": ["latest"],
+        "scheduler": ["prev123abc"],
+        "worker": ["prev123abc"],
+    }
+    assert deployed.current() == ("prev123abc", "running containers (one image)")
+    result = CliRunner().invoke(main, ["tag"])
+    assert result.exit_code == 0 and result.stdout == "prev123abc\n"
 
 
 # ---------------------------------------------------------------------------

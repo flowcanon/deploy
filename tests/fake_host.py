@@ -40,7 +40,6 @@ class Ctr:
     created: int
     state: str = "running"
     ref: str = ""  # what docker ps shows as Image; defaults to REPO:tag
-    config_hash: str = ""  # its config when created; `up` recreates it once that changes
     exit_code: int | None = None
 
 
@@ -69,7 +68,6 @@ class FakeHost:
         self.unhealthy_services: set[tuple[str, str]] = set()  # (service, tag) pairs
         self.stuck: set[str] = set()  # services whose compose up succeeds but changes nothing
         self.same_created = False  # docker ps shows one CreatedAt for every container
-        self.hashes: dict[str, str] = {}  # service -> its config now (default hash-<svc>)
         self.ignores_sigterm: set[str] = set()  # services docker stop has to SIGKILL
         # Like a fail-closed script/prod: a compose call without DEPLOY_TAG fails.
         self.wrapper_requires_tag = True
@@ -99,13 +97,9 @@ class FakeHost:
             created=next(self._clock),
             state=state,
             ref=ref or f"{REPO}:{tag}",
-            config_hash=self.config_hash(service),
         )
         self.ctrs.append(ctr)
         return ctr
-
-    def config_hash(self, service: str) -> str:
-        return self.hashes.get(service, f"hash-{service}")
 
     def fail(self, substring: str, times: int | None = None, skip: int = 0) -> None:
         """Fail commands containing ``substring``: after ``skip`` matches, ``times`` times."""
@@ -242,12 +236,6 @@ class FakeHost:
 
     def _up(self, args, tag):
         service = args[-1]
-        if "--dry-run" in args:  # compose's recreate decision, changing nothing
-            states = [
-                "Recreate" if c.config_hash != self.config_hash(service) else "Running"
-                for c in self._live(service)
-            ]
-            return process.Result(0, "", "".join(f" Container x {s} \n" for s in states))
         replicas = 1
         if "--scale" in args:
             replicas = int(args[args.index("--scale") + 1].split("=")[1])
