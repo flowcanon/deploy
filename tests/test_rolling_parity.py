@@ -49,8 +49,7 @@ def is_snapshot(args):
         or args[:3] == ["docker", "image", "inspect"]
         or args[:3] == ["git", "rev-parse", "--verify"]
         or args[:4] == ["docker", "inspect", "--format", "{{.State.ExitCode}}"]
-        or (args[:2] == ["docker", "ps"] and "config-hash" in line)
-        or any(a.startswith("--hash=") for a in args)
+        or "--dry-run" in args
     )
 
 

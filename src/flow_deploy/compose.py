@@ -1,6 +1,7 @@
 """Compose command resolution + execution."""
 
 import os
+import re
 
 import yaml
 
@@ -56,19 +57,21 @@ def compose_config(
     return yaml.safe_load(result.stdout)
 
 
-def config_hashes(
-    services: list[str], cmd: list[str] | None = None, env: dict[str, str] | None = None
-) -> dict[str, str] | None:
-    """The config hash compose would label each service's containers with.
+def would_recreate(
+    service: str, cmd: list[str] | None = None, env: dict[str, str] | None = None
+) -> bool | None:
+    """Whether `up` would recreate ``service``'s running containers now.
 
-    What `up` compares to decide whether to recreate. None if compose can't
-    say (an older compose without --hash, or an error).
+    Asks compose itself (`up --dry-run`), so it matches compose's own
+    decision exactly: `config --hash` doesn't hash env_file services the way
+    `up` does. Changes nothing. None if compose can't say.
     """
-    if not services:
-        return {}
-    command = (cmd or resolve_command()) + ["config", f"--hash={','.join(services)}"]
-    result = process.run(command, env=env) if env else process.run(command)
+    command = (cmd or resolve_command()) + ["up", "-d", "--dry-run", "--no-deps", service]
+    # Plain progress lines, whatever the operator's COMPOSE_PROGRESS says.
+    result = process.run(
+        command, env={**(env or {}), "COMPOSE_PROGRESS": "plain", "COMPOSE_ANSI": "never"}
+    )
     if result.returncode != 0:
         return None
-    pairs = (line.split() for line in result.stdout.splitlines())
-    return {p[0]: p[1] for p in pairs if len(p) == 2}
+    lines = (result.stdout + "\n" + result.stderr).splitlines()
+    return any(re.match(r"\s*Container\s+\S+\s+Recreate\b", line) for line in lines)

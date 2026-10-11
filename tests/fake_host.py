@@ -40,7 +40,7 @@ class Ctr:
     created: int
     state: str = "running"
     ref: str = ""  # what docker ps shows as Image; defaults to REPO:tag
-    config_hash: str = ""  # compose's config-hash label when it was created
+    config_hash: str = ""  # its config when created; `up` recreates it once that changes
     exit_code: int | None = None
 
 
@@ -69,7 +69,7 @@ class FakeHost:
         self.unhealthy_services: set[tuple[str, str]] = set()  # (service, tag) pairs
         self.stuck: set[str] = set()  # services whose compose up succeeds but changes nothing
         self.same_created = False  # docker ps shows one CreatedAt for every container
-        self.hashes: dict[str, str] = {}  # service -> config hash now (default hash-<svc>)
+        self.hashes: dict[str, str] = {}  # service -> its config now (default hash-<svc>)
         self.ignores_sigterm: set[str] = set()  # services docker stop has to SIGKILL
         self.other_projects: list[str] = []  # other projects running these services here
         self.foreign_services: list[tuple[str, str]] = []  # (project, service) running here
@@ -200,9 +200,6 @@ class FakeHost:
         raise AssertionError(f"FakeHost: unexpected git {args}")
 
     def _compose(self, args, tag):
-        if args[:1] == ["config"] and any(a.startswith("--hash=") for a in args):
-            names = next(a for a in args if a.startswith("--hash="))[7:].split(",")
-            return ok("".join(f"{n} {self.config_hash(n)}\n" for n in names))
         if args[:1] == ["config"]:
             return ok(yaml.safe_dump(self._rendered(tag)))
         if args[:1] == ["pull"]:
@@ -231,6 +228,12 @@ class FakeHost:
 
     def _up(self, args, tag):
         service = args[-1]
+        if "--dry-run" in args:  # compose's recreate decision, changing nothing
+            states = [
+                "Recreate" if c.config_hash != self.config_hash(service) else "Running"
+                for c in self._live(service)
+            ]
+            return process.Result(0, "", "".join(f" Container x {s} \n" for s in states))
         replicas = 1
         if "--scale" in args:
             replicas = int(args[args.index("--scale") + 1].split("=")[1])
@@ -275,9 +278,6 @@ class FakeHost:
             if flag == "--filter" and value.startswith("status="):
                 statuses.append(value.split("=", 1)[1])
         statuses = statuses or ["running"]
-        if "config-hash" in args[-1]:
-            matched = [c for c in self.ctrs if c.service == service and c.state in statuses]
-            return ok("".join(c.config_hash + "\n" for c in matched))
         lines = [
             json.dumps(
                 {

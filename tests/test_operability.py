@@ -74,7 +74,9 @@ def test_accessory_config_drift_warns_and_leaves_it_alone(host, capsys):
     assert deploy(tag="v2", cmd=COMPOSE_CMD) == 0
     assert "accessory postgres's config changed since it started" in capsys.readouterr().err
     assert db in host.ctrs and db.state == "running"
-    assert not any("postgres" in c and "up" in c for c in host.commands())
+    # Only compose's dry run ever names it: nothing real is done to it.
+    ups = [c for c in host.commands() if "postgres" in c and " up " in c]
+    assert ups and all("--dry-run" in c for c in ups)
 
 
 def test_unchanged_accessory_warns_about_nothing(host, capsys):
@@ -83,8 +85,7 @@ def test_unchanged_accessory_warns_about_nothing(host, capsys):
 
 
 def test_drift_check_failures_are_ignored(host, capsys):
-    host.fail("--hash=")
-    host.fail('{{.Label "com.docker.compose.config-hash"}}')
+    host.fail("--dry-run")
     assert deploy(tag="v2", cmd=COMPOSE_CMD) == 0
     assert "accessory" not in capsys.readouterr().err
 
