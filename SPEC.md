@@ -330,7 +330,14 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml "$@"
 
 It fails closed: when `flow-deploy tag` can't tell, the wrapper stops rather than run compose on `:latest`. `flow-deploy` always sets `DEPLOY_TAG` when it calls the wrapper (to a placeholder while looking up the tag, and in `flow-deploy config`), so the default never asks it and never recurses. On a host with nothing running, pass `DEPLOY_TAG` explicitly.
 
-The wrapper must pass its arguments to compose unchanged and do nothing else: the tool runs `config`, `pull` and `up` (including `up --dry-run` to check accessories, §3.2) through it, and `exec`, `logs` and `flow-deploy compose` pass through it too, so a wrapper with side effects of its own would run them on every one.
+**The wrapper contract.** flow-deploy runs `config`, `pull`, `up`, and `up --dry-run` (the accessory check, §3.2) through the wrapper, and `exec`, `logs` and `flow-deploy compose` pass through it too. A wrapper may set up the environment (sourcing `.env`, defaulting `DEPLOY_TAG` as below), as long as it:
+
+- passes its arguments to compose unchanged
+- prints nothing extra on stdout (`config`'s output is parsed)
+- exits with compose's exit status
+- never prompts, and never changes the project or any files
+
+flow-deploy passes `DEPLOY_TAG` on every compose call it makes: the deploy tag, the deployed tag, or a lookup placeholder when it doesn't matter or isn't known (`config`, `status`, `exec`, `logs`). So a wrapper's own `DEPLOY_TAG` lookup never runs from inside flow-deploy. That matters for a fail-closed wrapper: a call without `DEPLOY_TAG` would exit 1, and a check built on it, like the accessory drift warning, would quietly give no answer.
 
 This pattern means the tool is completely agnostic about which compose files exist or how they're layered. The project defines its own composition strategy, and the tool just calls the wrapper with the appropriate subcommand arguments (`pull`, `up`, `stop`, etc.).
 

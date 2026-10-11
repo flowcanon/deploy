@@ -60,7 +60,8 @@ def test_exec(mock_resolve, mock_streaming):
     result = runner.invoke(main, ["exec", "web", "bash", "-c", "echo hi"])
     assert result.exit_code == 0
     mock_streaming.assert_called_once_with(
-        ["docker", "compose", "exec", "web", "bash", "-c", "echo hi"]
+        ["docker", "compose", "exec", "web", "bash", "-c", "echo hi"],
+        env={"DEPLOY_TAG": "flow-deploy-lookup"},
     )
 
 
@@ -82,7 +83,8 @@ def test_logs(mock_resolve, mock_streaming):
     result = runner.invoke(main, ["logs", "web", "--follow", "--tail", "100"])
     assert result.exit_code == 0
     mock_streaming.assert_called_once_with(
-        ["docker", "compose", "logs", "--follow", "--tail", "100", "web"]
+        ["docker", "compose", "logs", "--follow", "--tail", "100", "web"],
+        env={"DEPLOY_TAG": "flow-deploy-lookup"},
     )
 
 
@@ -94,7 +96,9 @@ def test_logs_basic(mock_resolve, mock_streaming):
     runner = CliRunner()
     result = runner.invoke(main, ["logs", "web"])
     assert result.exit_code == 0
-    mock_streaming.assert_called_once_with(["docker", "compose", "logs", "web"])
+    mock_streaming.assert_called_once_with(
+        ["docker", "compose", "logs", "web"], env={"DEPLOY_TAG": "flow-deploy-lookup"}
+    )
 
 
 @patch("flow_deploy.discovery.discover_hosts")

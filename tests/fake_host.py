@@ -71,6 +71,9 @@ class FakeHost:
         self.same_created = False  # docker ps shows one CreatedAt for every container
         self.hashes: dict[str, str] = {}  # service -> its config now (default hash-<svc>)
         self.ignores_sigterm: set[str] = set()  # services docker stop has to SIGKILL
+        # Like a fail-closed script/prod: a compose call without DEPLOY_TAG fails.
+        self.wrapper_requires_tag = True
+        self.streamed: list[tuple[list[str], dict | None]] = []  # run_streaming calls
         self.other_projects: list[str] = []  # other projects running these services here
         self.foreign_services: list[tuple[str, str]] = []  # (project, service) running here
         self.failures: list[list] = []  # [substring, skip, remaining or None]
@@ -114,7 +117,7 @@ class FakeHost:
 
     def install(self, monkeypatch) -> "FakeHost":
         monkeypatch.setattr(process, "run", self.run)
-        monkeypatch.setattr(process, "run_streaming", lambda args, env=None, cwd=None: 0)
+        monkeypatch.setattr(process, "run_streaming", self.run_streaming)
         monkeypatch.setattr("flow_deploy.deploy.time.sleep", lambda _s: None)
         return self
 
@@ -146,6 +149,15 @@ class FakeHost:
 
     # -- the fake ----------------------------------------------------------
 
+    def _untagged(self, args, env) -> bool:
+        """A compose call a fail-closed wrapper would refuse: no DEPLOY_TAG."""
+        is_compose = args[: len(COMPOSE_CMD)] == COMPOSE_CMD
+        return self.wrapper_requires_tag and is_compose and not (env or {}).get("DEPLOY_TAG")
+
+    def run_streaming(self, args, env=None, cwd=None):
+        self.streamed.append((list(args), env))
+        return 1 if self._untagged(args, env) else 0
+
     def run(self, args, env=None, cwd=None, new_session=False):
         self.calls.append(list(args))
         self.envs.append(env)
@@ -166,6 +178,8 @@ class FakeHost:
                 if times is not None:
                     rule[2] -= 1
                 return fail()
+        if self._untagged(args, env):
+            return fail("script/prod: set DEPLOY_TAG (flow-deploy tag couldn't tell)")
         tag = (env or {}).get("DEPLOY_TAG", "latest")
         if args[:1] == ["git"]:
             return self._git(args[1:])

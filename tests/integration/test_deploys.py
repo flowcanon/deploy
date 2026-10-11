@@ -557,3 +557,47 @@ def test_env_file_accessory_drift_matches_composes_own_decision(stack):
     assert "accessory db's config changed since it started" in edited.stderr
     assert "Accessory db: config changed" in stack.flow("status").stdout
     assert stack.container_ids("db") == db_ids, "flow-deploy recreated an accessory"
+
+
+# Stricter than the documented fail-closed snippet: it refuses outright when
+# DEPLOY_TAG is unset, so a lookup that happens to succeed can't hide a call
+# flow-deploy made without it.
+STRICT_WRAPPER = """#!/bin/sh
+if [ -z "${DEPLOY_TAG:-}" ]; then
+  echo "script/prod: set DEPLOY_TAG" >&2
+  exit 1
+fi
+exec docker compose "$@"
+"""
+
+
+def test_flow_deploy_never_leaves_the_wrapper_to_find_deploy_tag(stack):
+    """deploy, status (drift included), config, exec and logs all pass DEPLOY_TAG
+    through the project's compose wrapper, so a fail-closed wrapper never
+    exits underneath them and silently empties an answer."""
+    wrapper = stack.repo / "script" / "prod"
+    wrapper.parent.mkdir()
+    wrapper.write_text(STRICT_WRAPPER)
+    wrapper.chmod(0o755)
+    stack.git("add", "script/prod")
+    stack.git("commit", "-q", "-m", "fail-closed wrapper")
+    x_deploy = {"host": "app-1.example.com", "user": "deploy", "dir": "/srv/app"}
+    stack.commit("v1", {**standard(cache=accessory("a")), "x-deploy": x_deploy})
+    stack.commit("v2", {**standard(cache=accessory("b")), "x-deploy": x_deploy})
+    stack.up("v1")
+
+    result = stack.deploy("v2")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "script/prod: set DEPLOY_TAG" not in result.stderr
+    assert "accessory cache's config changed since it started" in result.stderr
+    status = stack.flow("status")
+    assert status.returncode == 0, status.stderr
+    assert "Accessory cache: config changed since it started" in status.stdout
+    config = stack.flow("config")
+    assert config.returncode == 0, config.stderr
+    assert json.loads(config.stdout)[0]["host"] == "app-1.example.com"
+    for args in (["exec", "-T", "web", "true"], ["logs", "--tail", "1", "web"]):
+        ran = stack.flow(*args)
+        assert ran.returncode == 0, (args, ran.stderr)
+        assert "script/prod: set DEPLOY_TAG" not in ran.stderr

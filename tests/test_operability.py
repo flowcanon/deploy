@@ -96,6 +96,35 @@ def test_status_shows_accessory_drift(host):
     assert "Accessory postgres: config changed since it started" in result.stdout
 
 
+def test_status_drift_check_passes_deploy_tag_when_the_tag_is_unknown(host):
+    """Services on different tags: the deployed tag is unknown. The drift
+    check still passes DEPLOY_TAG, so a fail-closed wrapper answers."""
+    host.ctrs = [c for c in host.ctrs if c.service != "worker"]
+    host.add("worker", "v2")
+    host.hashes["postgres"] = "changed"
+    out = CliRunner().invoke(main, ["status"]).stdout
+    assert "Deployed tag: unknown" in out
+    assert "Accessory postgres: config changed since it started" in out
+
+
+@pytest.mark.parametrize("args", [["exec", "web", "ls"], ["logs", "web"]])
+def test_exec_and_logs_pass_deploy_tag(host, args):
+    assert CliRunner().invoke(main, args).exit_code == 0
+    assert host.streamed[-1][1] == {"DEPLOY_TAG": "flow-deploy-lookup"}
+
+
+def test_exec_keeps_an_explicit_deploy_tag(host, monkeypatch):
+    monkeypatch.setenv("DEPLOY_TAG", "v9")
+    assert CliRunner().invoke(main, ["exec", "web", "ls"]).exit_code == 0
+    assert host.streamed[-1][1] == {"DEPLOY_TAG": "v9"}
+
+
+def test_the_fake_wrapper_refuses_an_untagged_compose_call(host):
+    """The strict FakeHost is what makes every test above check the contract."""
+    assert host.run(list(COMPOSE_CMD) + ["config"]).returncode == 1
+    assert host.run_streaming(list(COMPOSE_CMD) + ["ps"]) == 1
+
+
 # ---------------------------------------------------------------------------
 # 6. The record holds the deployed commit
 # ---------------------------------------------------------------------------

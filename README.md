@@ -284,9 +284,13 @@ if [ -z "${DEPLOY_TAG:-}" ]; then
 fi
 ```
 
-flow-deploy sets `DEPLOY_TAG` itself on every compose call it makes (to a
-placeholder while it looks up the tag, and in `flow-deploy config` in CI), so
-the wrapper never asks it and never recurses. On a fresh host with nothing
+flow-deploy sets `DEPLOY_TAG` itself on every compose call it makes: the
+deploy tag, or a placeholder where the image doesn't matter or the tag isn't
+known (`flow-deploy tag` itself, `config` in CI, `status`, `exec`, `logs`). So the wrapper never asks it,
+never recurses, and never exits underneath it. Beyond that, a wrapper may set up
+the environment, but must pass its arguments through unchanged, print nothing
+extra on stdout, exit with compose's status, and never prompt or change files
+(SPEC §3.1). On a fresh host with nothing
 running, pass the tag: `DEPLOY_TAG=v1.4.0 script/prod up -d`. A `--service`
 deploy that leaves some app services out leaves them on different tags, so it
 clears the record and warns.
