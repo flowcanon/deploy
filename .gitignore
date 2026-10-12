@@ -3,3 +3,4 @@
 .omc/
 __pycache__/
 .site-dev/
+dist/
