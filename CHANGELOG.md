@@ -1,5 +1,10 @@
 # Changelog
 
+### [0.3.2](https://github.com/flowcanon/deploy/compare/v0.3.1...v0.3.2) (2026-10-12)
+
+- Version-tag release deploys; faster integration suite [#39](https://github.com/flowcanon/deploy/pull/39)
+
+
 ### [0.3.1](https://github.com/flowcanon/deploy/compare/v0.3.0...v0.3.1) (2026-10-11)
 
 - Drain-first deploys, version-tag deploys, and exact reverts [#31](https://github.com/flowcanon/deploy/pull/31)
