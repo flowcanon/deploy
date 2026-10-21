@@ -117,6 +117,30 @@ All configuration is via Docker labels on your services:
 | `deploy.healthcheck.poll` | `2` | Seconds between health polls |
 | `deploy.healthcheck.skip` | `false` | Skip healthcheck validation and waiting |
 | `deploy.strategy` | `rolling` | `rolling` or `drain-first` (see below) |
+| `deploy.post-deploy` | — | Command to run in the service after a deploy (see below) |
+
+### Post-deploy hooks
+
+`deploy.post-deploy` runs a command once in the service's new container after a
+successful deploy: content seeding, cache warming, notifications.
+
+```yaml
+services:
+  web:
+    labels:
+      deploy.role: app
+      deploy.post-deploy: python manage.py setup_pages
+```
+
+Hooks run with `compose exec -T <service> sh -c '<command>'`, in `deploy.order`,
+once every service is up and healthy, and their output goes in the deploy log.
+Write `$$` for a literal `$`, as anywhere in a compose file. A hook that fails
+(or is interrupted) only warns: the deploy has already succeeded, and reverting
+healthy containers wouldn't undo what the hook did. So keep them idempotent.
+For several commands, chain them (`a && b`) or call a script in the image. A
+failed deploy runs no hooks, and `--service` runs only the hooks of the services
+it deploys. Migrations stay in the app's boot sequence: they must run before
+new code serves, and a hook runs after.
 
 ### Drain-first services
 

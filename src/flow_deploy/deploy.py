@@ -338,12 +338,47 @@ def _deploy_locked(
             "on this host need DEPLOY_TAG set explicitly until a full deploy"
         )
 
+    _post_deploy(app_services, tag, compose_cmd)
+
     elapsed = time.time() - start_time
 
     log.info("")
     log.info(f"HEAD detached at {tag}")
     log.footer(f"complete ({elapsed:.1f}s)")
     return EXIT_OK
+
+
+def _post_deploy(services: list[config.ServiceConfig], tag: str, compose_cmd: list[str]) -> None:
+    """Run each service's deploy.post-deploy command once, in its new container.
+
+    In deploy order, once every service is up and healthy. The deploy has
+    already succeeded, so a hook that fails (or is interrupted) only warns:
+    reverting healthy containers wouldn't undo whatever the hook did.
+    """
+    try:
+        for svc in [s for s in services if s.post_deploy]:
+            log.service_start(f"{svc.name} post-deploy")
+            log.step(f"running: {svc.post_deploy}")
+            result = compose.compose_run(
+                ["exec", "-T", svc.name, "sh", "-c", svc.post_deploy],
+                env={"DEPLOY_TAG": tag},
+                cmd=compose_cmd,
+            )
+            for line in (result.stdout + result.stderr).splitlines():
+                log.step(f"  {line}")
+            if result.returncode == 0:
+                log.success(f"{svc.name} post-deploy done")
+            else:
+                log.warning(
+                    f"{svc.name}'s post-deploy hook exited {result.returncode}; "
+                    "the deploy itself succeeded"
+                )
+            log.service_end()
+    except Interrupted as exc:
+        log.service_end()
+        log.warning(
+            f"post-deploy hooks interrupted by signal {exc.signum}; the deploy itself succeeded"
+        )
 
 
 def _warn_untagged_images(services: list[config.ServiceConfig], tag: str) -> None:
@@ -946,5 +981,9 @@ def _dry_run(tag: str, services: list[config.ServiceConfig]) -> None:
     for svc in drain_first:
         log.service_start(svc.name)
         log.step(f"would start on {tag}, health check (timeout: {svc.healthcheck_timeout}s)")
+        log.service_end()
+    for svc in [s for s in services if s.post_deploy]:
+        log.service_start(f"{svc.name} post-deploy")
+        log.step(f"would run: {svc.post_deploy}")
         log.service_end()
     log.footer("dry-run complete")
