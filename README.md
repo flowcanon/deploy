@@ -92,6 +92,10 @@ For each `deploy.role=app` service, in order:
 4. **Cutover** — if healthy, gracefully drain the old container and scale back to 1
 5. **Abort** — if unhealthy, remove the new container. Old container is untouched.
 
+A service with no running container (new in this release, or stopped) has
+nothing to roll from: it's pulled, started at one container, and must pass its
+health check.
+
 ## Service Roles
 
 | Label | Behavior |

@@ -71,6 +71,8 @@ The snapshot is what a revert restores: the image each service was running, name
       ✗ Revert (below), exit 1
 ```
 
+A rolling service with no running container (new in this release, or stopped) has nothing to roll from: it is pulled, started at one replica (`up -d --no-deps --scale <service>=1`) and health-checked; on failure it is removed. Scaling it to 2 would start two new containers and no old one to tell apart.
+
 Services labelled `deploy.strategy=drain-first` are instead stopped before any rolling service and started after them; see §2.5.
 
 **On success:** the server is in detached HEAD at `<tag>`, and `.git/deploy-tag` records the tag (§2.8). Log `HEAD detached at <tag>`.

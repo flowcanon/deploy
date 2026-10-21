@@ -296,7 +296,12 @@ def _deploy_locked(
         # health wait, say) then rolls it back like any shipped service,
         # which keeps an old container that's still running.
         run.shipped.append(svc.name)
-        result = _deploy_service(svc, tag, compose_cmd, project=project)
+        if run.previous[svc.name].replicas:
+            result = _deploy_service(svc, tag, compose_cmd, project=project)
+        else:
+            # Nothing to roll from (just added in this release, or crashed):
+            # scaling to 2 would start two new containers and no old one.
+            result = _start_service(svc, tag, compose_cmd, project=project, pull=True)
         if result == SVC_DIRTY:
             dirty.append(svc.name)
         if result != SVC_OK and run.previous[svc.name].replicas:
@@ -574,15 +579,22 @@ def _start_service(
     compose_cmd: list[str],
     replicas: int = 1,
     project: str = "",
+    pull: bool = False,
 ) -> int:
-    """Start a drained service on the new tag at ``replicas`` and wait for health.
+    """Start a service with no running containers on the new tag, at ``replicas``; wait for health.
 
-    Returns SVC_OK, or SVC_FAILED / SVC_DIRTY after removing what it started
-    (DIRTY when that removal itself failed).
+    For a drained service (already pulled by its drain), or with ``pull`` a
+    rolling service that had no container to roll from. Returns SVC_OK, or
+    SVC_FAILED / SVC_DIRTY after removing what it started (DIRTY when that
+    removal itself failed).
     """
     log.service_start(svc.name)
     svc_start = time.time()
     env = {"DEPLOY_TAG": tag}
+
+    if pull and not _pull(svc, env, compose_cmd):
+        log.service_end()
+        return SVC_FAILED
 
     def fail(msg: str, ctrs: list[dict]) -> int:
         # Remove what started: an unhealthy worker may still be consuming,
