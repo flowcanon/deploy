@@ -559,3 +559,47 @@ def test_flow_deploy_never_leaves_the_wrapper_to_find_deploy_tag(stack):
         ran = stack.flow(*args)
         assert ran.returncode == 0, (args, ran.stderr)
         assert "script/prod: set DEPLOY_TAG" not in ran.stderr
+
+
+def test_first_deploy_of_a_new_rolling_service(stack):
+    """Nothing to roll from: it starts on the new tag instead of failing to
+    tell two new containers apart (flowcanon.com 2.2.3's scheduler)."""
+    stack.commit("v1", standard(scheduler=None, worker=None))
+    stack.commit("v2", standard(scheduler=None, worker=None, api=service(150)))
+    stack.up("v1")
+
+    result = stack.deploy("v2")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert stack.running() == {"web": ["v2"], "api": ["v2"]}
+    assert stack.record()["tag"] == "v2"
+
+
+def test_stopped_rolling_service_comes_back_on_the_new_tag(stack):
+    stack.commit("v1", standard(scheduler=None, worker=None))
+    stack.commit("v2", standard(scheduler=None, worker=None))
+    stack.up("v1")
+    stack.compose("stop", "web", tag="v1")
+
+    result = stack.deploy("v2")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert stack.state() == {"web": [("v2", "running")]}
+
+
+def test_post_deploy_hook_runs_in_the_new_container(stack):
+    web = service(100)
+    # $$: compose would otherwise interpolate it from the host's environment.
+    web["labels"]["deploy.post-deploy"] = "echo hooked on $$STUB_VERSION; exit 3"
+    stack.commit("v1", standard(scheduler=None, worker=None))
+    stack.commit("v2", standard(web=web, scheduler=None, worker=None))
+    stack.up("v1")
+
+    result = stack.deploy("v2")
+
+    # The hook ran once, after the cutover, in the v2 container; its failure
+    # only warns.
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.count("hooked on v2") == 1, result.stdout
+    assert "web's post-deploy hook exited 3" in result.stderr
+    assert stack.running() == {"web": ["v2"]}

@@ -28,6 +28,7 @@ class ServiceConfig:
     port: int | None = None
     dir: str | None = None
     strategy: str = "rolling"
+    post_deploy: str | None = None  # shell command run in the service after a deploy
 
     @property
     def is_app(self) -> bool:
@@ -106,6 +107,8 @@ def parse_services(compose_dict: dict) -> list[ServiceConfig]:
                 port=port,
                 dir=svc_dir,
                 strategy=_get_label(labels, "deploy.strategy", "rolling"),
+                # compose config keeps $ escaped as $$, so the output re-parses.
+                post_deploy=_get_label(labels, "deploy.post-deploy", "").replace("$$", "$") or None,
             )
         )
 

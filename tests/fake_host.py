@@ -72,6 +72,7 @@ class FakeHost:
         # Like a fail-closed script/prod: a compose call without DEPLOY_TAG fails.
         self.wrapper_requires_tag = True
         self.streamed: list[tuple[list[str], dict | None]] = []  # run_streaming calls
+        self.exec_output = ""  # what compose exec prints
         self.other_projects: list[str] = []  # other projects running these services here
         self.foreign_services: list[tuple[str, str]] = []  # (project, service) running here
         self.failures: list[list] = []  # [substring, skip, remaining or None]
@@ -218,6 +219,8 @@ class FakeHost:
             return ok()
         if args[:1] == ["up"]:
             return self._up(args, tag)
+        if args[:1] == ["exec"]:
+            return ok(self.exec_output)
         raise AssertionError(f"FakeHost: unexpected compose {args}")
 
     def _rendered(self, tag):
@@ -247,10 +250,15 @@ class FakeHost:
             return ok()
         live = self._live(service)
         if "--no-recreate" not in args:
-            for ctr in [c for c in live if c.tag != tag]:
+            # Compose recreates every container whose config has changed,
+            # stopped ones included (which then start on the new config).
+            for ctr in [c for c in self.ctrs if c.service == service and c.tag != tag]:
                 self.ctrs.remove(ctr)
-                live.remove(ctr)
-                live.append(self.add(service, tag))
+                if ctr in live:
+                    live.remove(ctr)
+                    live.append(self.add(service, tag))
+                elif ctr.state == "exited":
+                    self.add(service, tag, state="exited")
         while len(live) > replicas:  # compose removes the newest extras
             newest = max(live, key=lambda c: c.created)
             self.ctrs.remove(newest)

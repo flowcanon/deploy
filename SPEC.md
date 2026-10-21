@@ -71,7 +71,11 @@ The snapshot is what a revert restores: the image each service was running, name
       ✗ Revert (below), exit 1
 ```
 
+A rolling service with no running container (new in this release, or stopped) has nothing to roll from: it is pulled, started at one replica (`up -d --no-deps --scale <service>=1`) and health-checked; on failure it is removed. Scaling it to 2 would start two new containers and no old one to tell apart.
+
 Services labelled `deploy.strategy=drain-first` are instead stopped before any rolling service and started after them; see §2.5.
+
+After every service is up and healthy, post-deploy hooks run (§2.7).
 
 **On success:** the server is in detached HEAD at `<tag>`, and `.git/deploy-tag` records the tag (§2.8). Log `HEAD detached at <tag>`.
 
@@ -241,9 +245,20 @@ Environment variable overrides exist because `x-deploy` values are committed to 
 
 The GitHub Action (§7) reads these values by running `<compose-command> config` in CI, which outputs the fully merged YAML with all overrides applied. It then groups services by host, applies any environment variable overrides, and SSHes to each one.
 
-### 2.7 Pre-Deploy and Post-Deploy Hooks
+### 2.7 Post-Deploy Hooks
 
-*Deferred to v2 (see §12.3).* Hook support (pre-deploy commands like migrations, post-deploy commands like cache warming) is a natural extension but not required for v1. Migrations are left to the framework's own boot sequence or manual execution via `flow-deploy exec`.
+A `deploy.post-deploy` label on an app service names a shell command to run once in that service after a successful deploy:
+
+```yaml
+web:
+  labels:
+    deploy.role: app
+    deploy.post-deploy: python manage.py setup_pages
+```
+
+Once every service is up and healthy, the deploy runs `<compose-command> exec -T <service> sh -c '<command>'` for each hooked service it deployed, in `deploy.order`, and logs the output. `$$` is a literal `$`, as everywhere in compose. The deploy has already succeeded by then, so a hook that fails or is interrupted logs a warning and the deploy still exits 0: reverting healthy containers wouldn't undo whatever the hook did. A failed deploy runs no hooks.
+
+Pre-deploy hooks remain deferred (§12.3). Migrations are left to the framework's own boot sequence or manual execution via `flow-deploy exec`.
 
 ### 2.8 Versioning and Image Tags
 
@@ -721,6 +736,7 @@ The tool has zero configuration files. All behavior is controlled by `x-deploy` 
 | `deploy.dir` | No | `x-deploy.dir` | Project directory on remote host |
 | `deploy.order` | No | `100` | Deploy order (lower first) |
 | `deploy.strategy` | No | `rolling` | `rolling` or `drain-first` (§2.5) |
+| `deploy.post-deploy` | No | *(none)* | Command run in the service after a deploy (§2.7) |
 | `deploy.drain` | No | `30` | Seconds to wait after SIGTERM before SIGKILL |
 | `deploy.healthcheck.timeout` | No | `120` | Seconds before aborting |
 | `deploy.healthcheck.poll` | No | `2` | Seconds between polls |
@@ -802,9 +818,9 @@ If a service is already scaled to N (e.g., 3 workers), the rolling deploy should
 |---|---|---|
 | `deploy.scale` | `1` | Number of instances for this service |
 
-### 12.3 Pre-Deploy and Post-Deploy Hooks
+### 12.3 Pre-Deploy Hooks
 
-Hook support for pre-deploy commands (migrations, asset compilation) and post-deploy commands (cache warming, notifications). Deferred from v1 — migrations are handled by the framework's own boot sequence or via manual `flow-deploy exec`.
+Pre-deploy commands (migrations, asset compilation). Deferred: migrations are handled by the framework's own boot sequence or via manual `flow-deploy exec`. Post-deploy hooks shipped (§2.7).
 
 ---
 
@@ -818,6 +834,6 @@ Captured here for context on why v1 works the way it does:
 
 3. **Traefik drain:** Graceful shutdown is the default behavior. `docker stop --time <drain>` sends SIGTERM and waits (default 30s) before SIGKILL. Configurable via `deploy.drain` label.
 
-4. **Hook complexity:** Deferred to v2. Not needed for v1 — migrations are handled by the framework or via manual `flow-deploy exec`.
+4. **Hook complexity:** Post-deploy hooks are one label per service, run in the new container, and only warn on failure (§2.7). Pre-deploy hooks stay deferred: migrations are handled by the framework or via manual `flow-deploy exec`.
 
 5. **Fleet coordination:** The server-side tool (`flow-deploy`) is single-node by design. Multi-node coordination is handled by the GitHub Action (`flow-deploy-action`), which discovers hosts from compose labels and orchestrates via SSH. v2's two-phase deploy (`prepare` / `cutover` / `cancel`) gives the action the primitives it needs for coordinated fleet deploys.

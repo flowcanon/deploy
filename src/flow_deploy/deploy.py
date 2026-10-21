@@ -296,7 +296,12 @@ def _deploy_locked(
         # health wait, say) then rolls it back like any shipped service,
         # which keeps an old container that's still running.
         run.shipped.append(svc.name)
-        result = _deploy_service(svc, tag, compose_cmd, project=project)
+        if run.previous[svc.name].replicas:
+            result = _deploy_service(svc, tag, compose_cmd, project=project)
+        else:
+            # Nothing to roll from (just added in this release, or crashed):
+            # scaling to 2 would start two new containers and no old one.
+            result = _start_service(svc, tag, compose_cmd, project=project, pull=True)
         if result == SVC_DIRTY:
             dirty.append(svc.name)
         if result != SVC_OK and run.previous[svc.name].replicas:
@@ -333,12 +338,47 @@ def _deploy_locked(
             "on this host need DEPLOY_TAG set explicitly until a full deploy"
         )
 
+    _post_deploy(app_services, tag, compose_cmd)
+
     elapsed = time.time() - start_time
 
     log.info("")
     log.info(f"HEAD detached at {tag}")
     log.footer(f"complete ({elapsed:.1f}s)")
     return EXIT_OK
+
+
+def _post_deploy(services: list[config.ServiceConfig], tag: str, compose_cmd: list[str]) -> None:
+    """Run each service's deploy.post-deploy command once, in its new container.
+
+    In deploy order, once every service is up and healthy. The deploy has
+    already succeeded, so a hook that fails (or is interrupted) only warns:
+    reverting healthy containers wouldn't undo whatever the hook did.
+    """
+    try:
+        for svc in [s for s in services if s.post_deploy]:
+            log.service_start(f"{svc.name} post-deploy")
+            log.step(f"running: {svc.post_deploy}")
+            result = compose.compose_run(
+                ["exec", "-T", svc.name, "sh", "-c", svc.post_deploy],
+                env={"DEPLOY_TAG": tag},
+                cmd=compose_cmd,
+            )
+            for line in (result.stdout + result.stderr).splitlines():
+                log.step(f"  {line}")
+            if result.returncode == 0:
+                log.success(f"{svc.name} post-deploy done")
+            else:
+                log.warning(
+                    f"{svc.name}'s post-deploy hook exited {result.returncode}; "
+                    "the deploy itself succeeded"
+                )
+            log.service_end()
+    except Interrupted as exc:
+        log.service_end()
+        log.warning(
+            f"post-deploy hooks interrupted by signal {exc.signum}; the deploy itself succeeded"
+        )
 
 
 def _warn_untagged_images(services: list[config.ServiceConfig], tag: str) -> None:
@@ -574,15 +614,22 @@ def _start_service(
     compose_cmd: list[str],
     replicas: int = 1,
     project: str = "",
+    pull: bool = False,
 ) -> int:
-    """Start a drained service on the new tag at ``replicas`` and wait for health.
+    """Start a service with no running containers on the new tag, at ``replicas``; wait for health.
 
-    Returns SVC_OK, or SVC_FAILED / SVC_DIRTY after removing what it started
-    (DIRTY when that removal itself failed).
+    For a drained service (already pulled by its drain), or with ``pull`` a
+    rolling service that had no container to roll from. Returns SVC_OK, or
+    SVC_FAILED / SVC_DIRTY after removing what it started (DIRTY when that
+    removal itself failed).
     """
     log.service_start(svc.name)
     svc_start = time.time()
     env = {"DEPLOY_TAG": tag}
+
+    if pull and not _pull(svc, env, compose_cmd):
+        log.service_end()
+        return SVC_FAILED
 
     def fail(msg: str, ctrs: list[dict]) -> int:
         # Remove what started: an unhealthy worker may still be consuming,
@@ -934,5 +981,9 @@ def _dry_run(tag: str, services: list[config.ServiceConfig]) -> None:
     for svc in drain_first:
         log.service_start(svc.name)
         log.step(f"would start on {tag}, health check (timeout: {svc.healthcheck_timeout}s)")
+        log.service_end()
+    for svc in [s for s in services if s.post_deploy]:
+        log.service_start(f"{svc.name} post-deploy")
+        log.step(f"would run: {svc.post_deploy}")
         log.service_end()
     log.footer("dry-run complete")
